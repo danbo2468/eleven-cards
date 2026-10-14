@@ -2,7 +2,7 @@
 
 [← Eleven Cards](../../README.md)
 
-Part of the Eleven Cards collection preparation. This local build uses Eleven-prefixed runtime names; the collection has not been published to HACS. See the [migration guide](../../README.md#migrating-existing-dashboards) before replacing an existing card.
+Part of the Eleven Cards collection. Both cards are bundled for HACS; installation remains unavailable while this repository is private. See [HACS installation](../../README.md#hacs-installation) and the [migration guide](../../README.md#migrating-existing-dashboards) before replacing an existing card.
 
 **See electricity prices at a glance—and find the best times to use or export energy.**
 
@@ -33,7 +33,7 @@ Works with hourly or quarter-hour price intervals in the supported sensor format
 3. Register `/local/eleven-cards/eleven-dynamic-energy-price-card.js` as a dashboard resource of type **JavaScript module**.
 4. Refresh your browser and select **Eleven Dynamic Energy Price Card** in the card picker.
 
-The existing standalone HACS repository still supplies its original types and filenames, not this Eleven build. Do not overwrite its HACS-managed file manually. A collection HACS installation route will be documented after packaging and publication.
+Both cards are also included in the collection module described in [HACS installation](../../README.md#hacs-installation). The repository remains private for review, so HACS installation is not available yet. Do not overwrite any existing HACS-managed standalone file manually.
 
 ### 2. Add a card
 

@@ -4,7 +4,7 @@
 
 A compact Home Assistant card for comparing historical numeric sensors that share one unit.
 
-Part of the Eleven Cards collection preparation. Shared HACS packaging is not yet published; this local build uses Eleven-prefixed runtime names. See the [migration guide](../../README.md#migrating-existing-dashboards) before replacing an existing card.
+Part of the Eleven Cards collection. Both cards are bundled for HACS; installation remains unavailable while this repository is private. See [HACS installation](../../README.md#hacs-installation) and the [migration guide](../../README.md#migrating-existing-dashboards) before replacing an existing card.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ Replace both example entity IDs with your own recorded numeric sensors. Their un
 
 ## Installation
 
-There is no published collection installation route yet. For manual installation, use `dist/eleven-history-graph-card.js` built from this collection's `cards/history-graph-card/` directory.
+For collection installation, see [HACS installation](../../README.md#hacs-installation). It installs both cards through one module after the repository becomes public. For manual standalone installation, use `dist/eleven-history-graph-card.js` built from this collection's `cards/history-graph-card/` directory.
 
 1. Build the standalone card using the commands under **Build and test**.
 2. Copy `dist/eleven-history-graph-card.js` to `/config/www/eleven-cards/eleven-history-graph-card.js` in Home Assistant.

@@ -15,6 +15,22 @@ Each card works independently. They display existing Home Assistant data; they d
 
 The preview uses a real tariff snapshot in a standalone example, not a live dashboard. See the card documentation for its data provenance and settings. Screenshots predate the runtime rename; chart settings and appearance are unchanged.
 
+## HACS installation
+
+The repository is intentionally private for review. HACS only supports public repositories, so this installation route becomes available only after the owner makes it public. It is not listed in the default HACS store.
+
+Once public:
+
+1. In HACS, open the menu and choose **Custom repositories**.
+2. Add `https://github.com/hidder11/eleven-cards` with type **Dashboard**.
+3. Download **Eleven Cards**. Both cards are included in one module.
+4. Check dashboard resources for `/hacsfiles/eleven-cards/eleven-cards.js` with type **JavaScript module**. Add it only if HACS has not registered it automatically.
+5. Refresh the browser. Both Eleven cards are available in the card picker.
+
+HACS uses the root `hacs.json` and `dist/eleven-cards.js`. No release is required: until releases are published, the default branch supplies the package. When publishing a release later, attach that same `eleven-cards.js` as an asset.
+
+For a manual collection installation, copy `dist/eleven-cards.js` to `/config/www/eleven-cards/eleven-cards.js` and register `/local/eleven-cards/eleven-cards.js` as a JavaScript module instead. Standalone per-card modules remain available below, but do not keep them registered alongside the collection module.
+
 ## Start here
 
 1. Choose a card and check its sensor requirements.
@@ -58,7 +74,7 @@ npm test
 npm run check
 ```
 
-The build produces two independent JavaScript modules. Source and regression tests live under each card directory; root tests cover branding and both modules loading together. Edit source, not generated bundles.
+The build produces two independent JavaScript modules plus the self-contained HACS collection module `dist/eleven-cards.js`. Source and regression tests live under each card directory; root tests cover branding, HACS packaging and both modules loading together. Edit source, not generated bundles.
 
 ### Shared graph
 
@@ -78,8 +94,8 @@ The script currently uses the installed Chromium headless shell at `/opt/hermes/
 
 The collection includes card sources, tests, QA fixtures, documentation and separately built Eleven modules. The original standalone source projects are unchanged.
 
-Local installation has been tested separately. Private dashboard configurations and deployment evidence are intentionally not included. This is not a HACS collection release.
+Local installation has been tested separately. Private dashboard configurations and deployment evidence are intentionally not included.
 
-There is no published collection release, shared `eleven-cards.js` entry point or root HACS manifest yet. The per-card energy manifest is not a collection installation route. Existing standalone HACS releases still use their original names and types; they do not provide these renamed modules.
+The collection now has a root HACS manifest and a self-contained `dist/eleven-cards.js` module. The build retains the two standalone modules for manual installation and migration. No card configuration or runtime type has changed.
 
-Before a collection release, verify shared HACS packaging, publish a prerelease, and promote only after approval. The verified local installation does not imply GitHub publication or HACS collection availability.
+The repository remains private for owner review. The package is prepared for HACS custom-repository installation once it becomes public; it has not been installed through HACS or added to the default store. No collection release has been published.
