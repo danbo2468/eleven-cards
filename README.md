@@ -13,7 +13,6 @@ Each card works independently. They display existing Home Assistant data; they d
 
 ![Eleven Dynamic Energy Price Card preview](cards/dynamic-energy-price-card/docs/images/revised-default-dark-desktop.png)
 
-The preview uses a real tariff snapshot in a standalone example, not a live dashboard. See the card documentation for its data provenance and settings. Screenshots predate the runtime rename; chart settings and appearance are unchanged.
 
 ## HACS installation
 
