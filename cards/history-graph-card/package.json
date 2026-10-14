@@ -1,0 +1,1 @@
+{"name":"eleven-history-graph-card","version":"0.2.4-local","private":true,"type":"module","scripts":{"test":"node --test tests/*.test.mjs","build":"node scripts/build.mjs"}}

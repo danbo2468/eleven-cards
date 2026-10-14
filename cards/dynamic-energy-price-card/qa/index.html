@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dynamische energieprijzen — QA</title>
+  <style>
+    :root {
+      --primary-color: #03a9f4;
+      --primary-text-color: #e8eef3;
+      --secondary-text-color: #9eabb5;
+      --card-background-color: #17212b;
+      --secondary-background-color: #202d38;
+      --divider-color: rgba(255,255,255,.12);
+      --success-color: #34c995;
+      --error-color: #ff715f;
+      --ha-card-border-radius: 14px;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #0f171f;
+      color: var(--primary-text-color);
+    }
+    body { margin: 0; padding: 32px; }
+    main { max-width: 920px; height: 760px; margin: 0 auto; }
+    ha-card { display: block; background: var(--card-background-color); border-radius: var(--ha-card-border-radius); box-shadow: 0 8px 28px rgba(0,0,0,.25); }
+    @media (max-width: 520px) { body { padding: 8px; } main { height: 820px; } }
+  </style>
+</head>
+<body>
+  <main><eleven-dynamic-energy-price-card id="card"></eleven-dynamic-energy-price-card></main>
+  <script type="module">
+    import '../dist/eleven-dynamic-energy-price-card.js';
+    import './color-checks.js';
+    import './localization-checks.js';
+
+    // Minimal Home Assistant card surface for the standalone browser fixture.
+    if (!customElements.get('ha-card')) customElements.define('ha-card', class extends HTMLElement {
+      connectedCallback() {
+        this.style.display = 'block';
+        this.style.background = 'var(--card-background-color)';
+        this.style.borderRadius = 'var(--ha-card-border-radius)';
+        this.style.boxShadow = '0 8px 28px rgba(0,0,0,.15)';
+      }
+    });
+
+    const importData = [];
+    const exportData = [];
+    // Generate demonstration data for the viewer's current Amsterdam day.
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Amsterdam', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const tomorrow = new Date(`${today}T12:00:00Z`);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const days = [today, tomorrow.toISOString().slice(0, 10)];
+    for (const day of days) {
+      const offset = new Intl.DateTimeFormat('en', { timeZone: 'Europe/Amsterdam', timeZoneName: 'longOffset' })
+        .formatToParts(new Date(`${day}T12:00:00Z`)).find(part => part.type === 'timeZoneName').value.replace('GMT', '');
+      for (let index = 0; index < 96; index += 1) {
+        const hour = Math.floor(index / 4);
+        const minute = (index % 4) * 15;
+        const morningPeak = Math.exp(-Math.pow(hour - 8, 2) / 3) * 0.15;
+        const eveningPeak = Math.exp(-Math.pow(hour - 19, 2) / 5) * 0.28;
+        const middayDip = Math.exp(-Math.pow(hour - 13, 2) / 6) * 0.12;
+        const variation = Math.sin(index * 1.7) * 0.013;
+        const dayOffset = day === days[1] ? 0.015 : 0;
+        const importPrice = 0.31 + morningPeak + eveningPeak - middayDip + variation + dayOffset;
+        const exportPrice = 0.08 + middayDip * 1.25 - morningPeak * 0.25 - eveningPeak * 0.15 + variation / 2;
+        const start_time = `${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00${offset}`;
+        importData.push({ start_time, price_per_kwh: Number(importPrice.toFixed(4)) });
+        // Deliberately omit one export point to exercise the safe missing-value tooltip.
+        if (!(day === days[0] && hour === 11 && minute === 30)) {
+          exportData.push({ start_time, price_per_kwh: Number(exportPrice.toFixed(4)) });
+        }
+      }
+    }
+
+    const card = document.querySelector('#card');
+    card.setConfig({
+      entity: 'sensor.dynamic_import_prices',
+      export_entity: 'sensor.dynamic_export_prices',
+      title: 'Dynamische energieprijzen',
+      graph_mode: 'both',
+      current_price_mode: 'both',
+      show_title: true,
+      cheap_price: 0.15,
+      normal_price: 0.25,
+      expensive_price: 0.40,
+      cheapest_hours: 4,
+      export_best_hours: 4,
+      show_cheapest_table: true,
+      show_export_table: true,
+      show_hover_line: true,
+      show_average_line: true,
+      import_line_style: 'solid',
+      import_line_width: 3.5,
+      show_import_fill: true,
+      import_fill_color: [52, 201, 149],
+      import_fill_fade: false,
+      import_selection_mode: 'minimum_blocks',
+      import_minimum_duration: 30,
+      export_line_style: 'dotted',
+      export_line_width: 4.5,
+      export_line_color: [3, 169, 244],
+      show_export_fill: true,
+      export_fill_color: [25, 118, 210],
+      export_fill_fade: true,
+      export_selection_mode: 'contiguous',
+      export_minimum_duration: 45,
+      tomorrow_after: 14,
+    });
+    card.hass = {
+      config: { time_zone: 'Europe/Amsterdam' },
+      themes: { darkMode: true },
+      states: {
+        'sensor.dynamic_import_prices': {
+          state: '0.2384',
+          last_updated: new Date().toISOString(),
+          attributes: { data: importData },
+        },
+        'sensor.dynamic_export_prices': {
+          state: '0.1042',
+          last_updated: new Date().toISOString(),
+          attributes: { data: exportData },
+        },
+      },
+    };
+
+    // Console-callable QA helpers use runtime defaults, not the showcase overrides above.
+    window.qaBase = {
+      entity: 'sensor.dynamic_import_prices', export_entity: 'sensor.dynamic_export_prices',
+      title: 'Dynamic energy prices', graph_mode: 'both', current_price_mode: 'both',
+      cheapest_hours: 4, export_best_hours: 4, show_cheapest_table: true,
+      show_export_table: true, tomorrow_after: 0,
+    };
+    window.qaSet = (extra = {}) => {
+      card.setConfig({ ...window.qaBase, ...extra });
+      card.hass = card._hass;
+    };
+    window.qaTheme = (light) => {
+      const colors = light ? {
+        '--primary-text-color': '#212121', '--secondary-text-color': '#666666',
+        '--card-background-color': '#ffffff', '--secondary-background-color': '#f1f3f5',
+        '--divider-color': 'rgba(0,0,0,.12)', '--success-color': '#19a974', '--error-color': '#e45c4f',
+      } : {
+        '--primary-text-color': '#e8eef3', '--secondary-text-color': '#9eabb5',
+        '--card-background-color': '#17212b', '--secondary-background-color': '#202d38',
+        '--divider-color': 'rgba(255,255,255,.12)', '--success-color': '#34c995', '--error-color': '#ff715f',
+      };
+      for (const [key, value] of Object.entries(colors)) document.documentElement.style.setProperty(key, value);
+      document.documentElement.style.background = light ? '#eef1f4' : '#0f171f';
+    };
+  </script>
+</body>
+</html>

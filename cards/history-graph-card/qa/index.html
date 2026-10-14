@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>History card — synthetic QA</title>
+<style>
+:root{font-family:system-ui,sans-serif;--primary-text-color:#212121;--secondary-text-color:#616161;--card-background-color:#fff;--secondary-background-color:#f2f3f4;--divider-color:#ddd;--primary-color:#2196f3;background:#f1f3f5;color:var(--primary-text-color)}
+:root.dark{--primary-text-color:#e8e8e8;--secondary-text-color:#aaa;--card-background-color:#1c1c1c;--secondary-background-color:#282828;--divider-color:#444;background:#111}
+body{margin:16px}h1{font-size:16px;margin:0 0 8px}p{font-size:13px;color:var(--secondary-text-color)}.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}button,select{min-height:44px;font:inherit}.stage{max-width:720px;height:420px;margin:auto}eleven-history-graph-card{width:100%;height:100%}#results{white-space:pre-wrap;font-size:12px}
+</style>
+<h1>Synthetic demonstration / Synthetische demonstratie</h1><p>Generated room temperatures; no authentic Home Assistant readings. Includes an unavailable interval. Controls below belong to this QA fixture, not the card.</p>
+<div class="toolbar"><button id="theme">Light / Dark</button><select id="locale" aria-label="Language"><option value="en">English</option><option value="nl">Nederlands</option></select><select id="mode" aria-label="Response scenario"><option value="ready">History</option><option value="empty">Empty</option><option value="error">Error</option><option value="unit">Mixed units</option><option value="partial">Missing series</option></select><button id="check">Run checks</button></div>
+<div class="stage"><eleven-history-graph-card></eleven-history-graph-card></div><pre id="results"></pre>
+<script type="module">
+window.qaErrors=[];addEventListener('error',e=>qaErrors.push(e.message));addEventListener('unhandledrejection',e=>qaErrors.push(String(e.reason)));
+customElements.define('ha-card',class extends HTMLElement{constructor(){super();const s=this.attachShadow({mode:'open'});s.innerHTML='<style>:host{border:1px solid var(--divider-color);border-radius:12px;box-sizing:border-box;box-shadow:0 2px 3px #0001;overflow:hidden}</style><slot></slot>';}});
+await import('../dist/eleven-history-graph-card.js');
+const card=document.querySelector('eleven-history-graph-card');window.card=card;
+const names=['Living room','Bedroom','Outside'];const ids=['sensor.living_room','sensor.bedroom','sensor.outside'];
+let scenario='ready',lang='en';
+function makeHass(){return {locale:{language:lang},config:{time_zone:'Europe/Amsterdam'},states:Object.fromEntries(ids.map((id,i)=>[id,{state:String([21.7,19.8,14.2][i]),attributes:{friendly_name:lang==='nl'?['Woonkamer','Slaapkamer','Buiten'][i]:names[i],unit_of_measurement:scenario==='unit'&&i===2?'W':'°C'}}])),callApi:async(method,url)=>{
+ window.lastRequest={method,url};await new Promise(r=>setTimeout(r,100));if(scenario==='error')throw new Error('Synthetic failure');if(scenario==='empty')return [];
+ const q=new URLSearchParams(url.split('?')[1]),end=Date.parse(q.get('end_time')),start=Date.parse(decodeURIComponent(url.split('?')[0].split('period/')[1]));
+ return ids.slice(0,scenario==='partial'?2:3).map((id,i)=>Array.from({length:97},(_,n)=>({...(n===0?{entity_id:id}:{}),state:i===1&&n>=40&&n<=48?'unavailable':(i===2?14+4*Math.sin(n/13):21-i*1.5+0.7*Math.sin(n/10+i)+0.15*Math.cos(n/3)).toFixed(2),last_changed:new Date(start+(end-start)*n/96).toISOString()}))).reverse();
+}};}
+function setup(){card.hass=makeHass();card.setConfig({entities:ids,hours_to_show:24});window.exampleReady=false;setTimeout(()=>window.exampleReady=true,200);}
+setup();document.querySelector('#theme').onclick=()=>document.documentElement.classList.toggle('dark');document.querySelector('#locale').onchange=e=>{lang=e.target.value;setup();};document.querySelector('#mode').onchange=e=>{scenario=e.target.value;setup();};
+window.runChecks=()=>{
+ const s=card.shadowRoot,chart=s.querySelector('.chart'),out={status:card._status,lang:s.querySelector('ha-card')?.lang,paths:s.querySelectorAll('.series-line').length,overflow:document.documentElement.scrollWidth>innerWidth,errors:qaErrors};
+ if(chart){chart.focus();chart.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));const tip=s.querySelector('.tooltip'),b=chart.getBoundingClientRect(),t=tip.getBoundingClientRect();out.tooltipVisible=!tip.hidden;out.tooltipInside=t.left>=b.left&&t.right<=b.right+1&&t.top>=b.top&&t.bottom<=b.bottom+1;out.roundMarkers=[...s.querySelectorAll('.hover-dot')].every(d=>d.offsetWidth===d.offsetHeight);out.dashes=getComputedStyle(s.querySelectorAll('.series-line')[1]).strokeDasharray;chart.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));out.escape=tip.hidden;}
+ document.querySelector('#results').textContent=JSON.stringify(out,null,2);return out;
+};document.querySelector('#check').onclick=runChecks;
+</script></html>

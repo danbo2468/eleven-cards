@@ -1,0 +1,49 @@
+# Dependencies, caches and local tooling
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+.playwright/
+coverage/
+.nyc_output/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+.npmrc
+.netrc
+.git-credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+
+# Local evidence, backups and real household consumption
+/qa-evidence/
+/VERIFICATION.txt
+**/docs/images/consumption-real-*.png
+**/docs/examples/
+/cards/dynamic-energy-price-card/qa/consumption-checks.js
+*.log
+*.bak
+*.backup
+*.db
+*.sqlite
+*.sqlite3
+*.har
+playwright-report/
+test-results/
+
+# Built dist modules are intentionally versioned for manual installation.

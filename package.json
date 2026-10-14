@@ -1,0 +1,10 @@
+{
+  "name": "eleven-cards",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix cards/dynamic-energy-price-card run build && npm --prefix cards/history-graph-card run build",
+    "test": "npm run build && node --test tests/*.test.mjs && npm --prefix cards/dynamic-energy-price-card test && npm --prefix cards/history-graph-card test",
+    "check": "node --check cards/dynamic-energy-price-card/dist/eleven-dynamic-energy-price-card.js && node --check cards/history-graph-card/dist/eleven-history-graph-card.js"
+  }
+}
