@@ -20,7 +20,7 @@ class HacsPackageTests(unittest.TestCase):
         bundled = DIST.read_text(encoding="utf-8")
         self.assertNotIn("from './price-utils.js'", bundled)
         self.assertNotIn("export function", bundled)
-        self.assertIn("static getConfigForm()", bundled)
+        self.assertIn("static getConfigForm(config)", bundled)
         self.assertIn("computeHelper:", bundled)
         self.assertIn("customElements.define('eleven-dynamic-energy-price-card'", bundled)
 

@@ -31,7 +31,7 @@ test('each period column can be hidden independently with matching header and bo
   }
   card.setConfig({ entity: 'sensor.prices', ...Object.fromEntries(['day', 'type', 'start', 'end', 'duration', 'average'].map(c => [`show_period_${c}`, false])) });
   assert.equal(render(card), '');
-  const fields = Card.getConfigForm().schema[0].schema;
+  const fields = Card.getConfigForm().schema.find(s=>s.name==='table_settings').schema;
   for (const column of ['day', 'type', 'start', 'end', 'duration']) {
     const option = fields.find(f => f.name === `show_period_${column}`);
     assert.equal(option.default, true);

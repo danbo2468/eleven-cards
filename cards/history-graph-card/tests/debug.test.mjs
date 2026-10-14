@@ -7,7 +7,7 @@ function fixture(){
  const logs=[],timers=new Map();let now=Date.parse('2026-10-14T12:00:00Z'),id=0;
  class Clock extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
  const parent={elf:null,querySelector(){return this.elf;},insertAdjacentHTML(){this.elf={remove:()=>{this.elf=null;}};}};
- const registry=new Map();const context=vm.createContext({Date:Clock,Intl,console:{log:(...a)=>logs.push(a)},HTMLElement:class{attachShadow(){this.shadowRoot={querySelector:s=>s==='.eleven-elf'?parent.elf:parent};}},customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:{},document:{addEventListener(){},removeEventListener(){}},setTimeout:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},clearTimeout:i=>timers.delete(i)});
+ const registry=new Map();const context=vm.createContext({Date:Clock,Intl,console:{log:(...a)=>logs.push(a)},HTMLElement:class{attachShadow(){this.shadowRoot={querySelector:s=>s==='.eleven-elf'?parent.elf:parent};}},customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},window:new EventTarget(),document:{addEventListener(){},removeEventListener(){}},setTimeout:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},clearTimeout:i=>timers.delete(i)});
  vm.runInContext(bundle(),context);const C=registry.get('eleven-history-graph-card');
  return {context,logs,timers,parent,C,advance(ms){now+=ms;for(const [i,t] of [...timers])if(t.at<=now){timers.delete(i);t.fn();}}};
 }

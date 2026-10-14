@@ -22,8 +22,8 @@ test('HACS collection download registers both cards without imports or duplicate
   }});
   vm.runInContext(bundle, context);
   vm.runInContext(bundle, context);
-  assert.deepEqual([...registry.keys()].sort(), ['eleven-dynamic-energy-price-card', 'eleven-history-graph-card']);
-  assert.equal(window.customCards.length, 2);
+  assert.deepEqual([...registry.keys()].sort(), ['eleven-dynamic-energy-price-card', 'eleven-history-graph-card', 'eleven-timeline-card']);
+  assert.equal(window.customCards.length, 3);
 });
 
 test('collection can overlap existing standalone modules safely during migration', () => {
@@ -33,10 +33,10 @@ test('collection can overlap existing standalone modules safely during migration
       get: name => registry.get(name),
       define: (name, card) => { assert.ok(!registry.has(name)); registry.set(name, card); },
     }});
-    const paths = ['cards/dynamic-energy-price-card/dist/eleven-dynamic-energy-price-card.js', 'cards/history-graph-card/dist/eleven-history-graph-card.js'];
+    const paths = ['cards/dynamic-energy-price-card/dist/eleven-dynamic-energy-price-card.js', 'cards/history-graph-card/dist/eleven-history-graph-card.js', 'cards/timeline-card/dist/eleven-timeline-card.js'];
     paths[collectionFirst ? 'unshift' : 'push']('dist/eleven-cards.js');
     for (const path of paths) vm.runInContext(readFileSync(new URL(path, root), 'utf8'), context);
-    assert.equal(registry.size, 2);
-    assert.equal(window.customCards.length, 2);
+    assert.equal(registry.size, 3);
+    assert.equal(window.customCards.length, 3);
   }
 });

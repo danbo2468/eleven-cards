@@ -1,11 +1,103 @@
 function validColor(color){return typeof color==='string'?/^#[\da-f]{6}$/i.test(color):Array.isArray(color)&&color.length===3&&color.every(v=>Number.isInteger(v)&&v>=0&&v<=255);}
+export const SERIES_COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
+const APPEARANCE_KEYS=['line_width','line_style','line_interpolation','line_color','show_fill','fill_color','fill_opacity','fill_fade','gradient_mode','gradient_stops'];
+// Resolve legacy inheritance once. Explicit modes on new rows have no implicit precedence.
+const LINE_GEOMETRY_KEYS=['line_width','line_style','line_interpolation'];
+export function seriesAppearance(config,index,seen=new Set()) {
+ if(seen.has(config.entities[index]))throw new Error('line_style_source_cycle');
+ seen.add(config.entities[index]);
+ const option=config.series_options?.find(s=>s.entity===config.entities[index])??{};
+ const inherited=option.gradient_stops??(option.color?[]:config.gradient_stops??[]);
+ const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
+ const row={entity:config.entities[index],...(option.name?{name:option.name}:{}),
+  line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
+  line_interpolation:option.line_interpolation??config.line_interpolation??'step',
+  color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
+  gradient_mode:option.gradient_mode??config.gradient_mode??'smooth',gradient_stops:option.gradient_stops??inherited,
+  show_fill:option.show_fill??config.show_fill??false,fill_opacity:option.fill_opacity??config.fill_opacity??0.18,
+  fill_fade:option.fill_fade??config.fill_fade??true,
+  fill_mode:option.fill_mode??((option.fill_color||config.fill_color)?'own':'line'),
+  fill_color:option.fill_color||config.fill_color||option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length]};
+ if(option.line_style_source){
+  const source=config.entities.indexOf(option.line_style_source);
+  if(source<0)throw new Error('line_style_source_missing');
+  const style=seriesAppearance(config,source,seen);
+  for(const key of LINE_GEOMETRY_KEYS)row[key]=style[key];
+  row.line_style_source=option.line_style_source;
+ }
+ return structuredClone(row);
+}
+export function editorConfig(config) {
+ const data={hours_to_show:24,graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+  const row=seriesAppearance(config,index);
+  for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
+  row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
+  return row;
+ })};
+ delete data.series_options;for(const key of APPEARANCE_KEYS)delete data[key];return data;
+}
+export function cardConfig(data) {
+ const result={...data,entities:(data.entities??[]).map(row=>row.entity)};
+ result.series_options=(data.entities??[]).map((row,index)=>{
+  const resolved=seriesAppearance({entities:result.entities,series_options:data.entities},index);
+  if(!row.name)delete resolved.name;return resolved;
+ });
+ for(const key of APPEARANCE_KEYS)delete result[key];return result;
+}
+// Keep effective geometry concrete in editor rows; the explicit link remains its owner.
+function resolvedEditorRows(rows){
+ const config={entities:rows.map(r=>r.entity),series_options:rows};
+ return rows.map((row,index)=>{
+  if(!row.entity)return structuredClone(row);
+  const result=structuredClone(row),effective=seriesAppearance(config,index);
+  for(const key of LINE_GEOMETRY_KEYS)result[key]=effective[key];
+  return result;
+ });
+}
+export function updateSeriesRow(data,index,value){
+ const rows=resolvedEditorRows(data.entities),old=rows[index];
+ rows[index]={...old,...structuredClone(value)};
+ // Detaching takes the effective source geometry, never stale hidden fields.
+ if(old.line_style_source&&!rows[index].line_style_source){
+  delete rows[index].line_style_source;
+  for(const key of LINE_GEOMETRY_KEYS)rows[index][key]=old[key];
+ }
+ if(old.entity!==rows[index].entity)for(const row of rows){
+  if(row.line_style_source===old.entity){
+   if(rows[index].entity)row.line_style_source=rows[index].entity;
+   else delete row.line_style_source;
+  }
+ }
+ return {...data,entities:resolvedEditorRows(rows)};
+}
+export function removeSeriesRow(data,index){
+ const rows=resolvedEditorRows(data.entities),removed=rows[index].entity;
+ const remaining=rows.filter((_,i)=>i!==index);
+ for(const row of remaining)if(row.line_style_source===removed)delete row.line_style_source;
+ return {...data,entities:resolvedEditorRows(remaining)};
+}
+export function lineStyleSources(rows,row){
+ return rows.filter(candidate=>{
+  if(!candidate.entity||candidate.entity===row.entity)return false;
+  const seen=new Set([row.entity]);let current=candidate;
+  while(current){
+   if(seen.has(current.entity))return false;
+   seen.add(current.entity);
+   current=rows.find(r=>r.entity===current.line_style_source);
+  }
+  return true;
+ });
+}
 export function validateConfig(config) {
  const entities=config?.entities;
  if(!Array.isArray(entities)||entities.length<1||entities.length>8||entities.some(id=>typeof id!=='string'||!/^sensor\.[a-z0-9_]+$/.test(id))||new Set(entities).size!==entities.length) throw new Error('entities');
  const hours=config.hours_to_show??24;
- if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>168) throw new Error('hours');
+ if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
+ if(result.hover_sync_group==null)result.hover_sync_group='';
+ if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
  result.line_interpolation=result.line_interpolation==null||result.line_interpolation===''?'step':result.line_interpolation;
  if(!['smooth','linear','step'].includes(result.line_interpolation))throw new Error('line_interpolation');
  for(const key of ['y_min','y_max']){
@@ -16,13 +108,34 @@ export function validateConfig(config) {
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
- for(const key of ['show_fill','fill_fade','show_hover_line']) if(typeof result[key]!=='boolean') throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend']) if(typeof result[key]!=='boolean') throw new Error(key);
  if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
  const stops=result.gradient_stops??[];
  if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
  result.gradient_stops=stops.map(s=>({value:s.value,color:Array.isArray(s.color)?[...s.color]:s.color})).sort((a,b)=>a.value-b.value);
  result.gradient_mode=result.gradient_mode??'smooth';
  if(!['smooth','steps'].includes(result.gradient_mode)) throw new Error('gradient_mode');
+ result.graph_mode=result.graph_mode??'lines';
+ result.aggregation_period=result.aggregation_period??'none';result.aggregation_method=result.aggregation_method??'avg';
+ if(!['none','minute','quarter_hour','hour','day','week','month'].includes(result.aggregation_period))throw new Error('aggregation_period');
+ if(!['min','max','avg'].includes(result.aggregation_method))throw new Error('aggregation_method');
+ if(!['lines','stacked'].includes(result.graph_mode))throw new Error('graph_mode');
+ const options=result.series_options??[];
+ if(!Array.isArray(options)||options.some(s=>!s||!entities.includes(s.entity)||(s.name!=null&&typeof s.name!=='string')||(s.color!=null&&s.color!==''&&!validColor(s.color)))||new Set(options.map(s=>s.entity)).size!==options.length)throw new Error('series_options');
+ result.series_options=options.map(s=>{
+  if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
+  if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
+  for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
+  if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
+  if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
+  if(s.gradient_mode!=null&&!['smooth','steps'].includes(s.gradient_mode))throw new Error('series_gradient_mode');
+  const row={...s,color:Array.isArray(s.color)?[...s.color]:s.color,fill_color:Array.isArray(s.fill_color)?[...s.fill_color]:s.fill_color};
+  if(s.gradient_stops!=null){const stops=s.gradient_stops;if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length)throw new Error('series_gradient_stops');row.gradient_stops=stops.map(s=>({value:s.value,color:Array.isArray(s.color)?[...s.color]:s.color})).sort((a,b)=>a.value-b.value);}
+  return row;
+ });
+ for(let i=0;i<entities.length;i++)seriesAppearance(result,i);
  return result;
 }
 function rgb(color){return Array.isArray(color)?color:[1,3,5].map(i=>parseInt(color.slice(i,i+2),16));}
@@ -71,17 +184,18 @@ export function stepPath(points,end,x,y) {
  if(active) path+=` H ${x(end)}`;
  return path;
 }
-export function seriesMetadata(hass,entities) {
+export function seriesMetadata(hass,entities,options=[]) {
  const items=entities.map(id=>{
   const state=hass.states?.[id]; if(!state) throw new Error('missing');
-  return {id,name:state.attributes?.friendly_name??id,unit:state.attributes?.unit_of_measurement??''};
+  const option=options.find(s=>s.entity===id);
+  return {id,name:option?.name||state.attributes?.friendly_name||id,unit:state.attributes?.unit_of_measurement??''};
  });
  if(items.some(item=>item.unit!==items[0].unit)) throw new Error('unit');
  return {items,unit:items[0].unit};
 }
 export function yRange(series,config={}) {
  let min=Infinity,max=-Infinity;
- for(const s of series) for(const p of s.points) if(Number.isFinite(p.v)){min=Math.min(min,p.v);max=Math.max(max,p.v);}
+ for(const s of series) for(const p of s.points) for(const value of [p.v,p.base])if(Number.isFinite(value)){min=Math.min(min,value);max=Math.max(max,value);}
  if(min===Infinity){min=0;max=1;}
  else {const padding=min===max?Math.max(1,Math.abs(min)*0.05):(max-min)*0.08;min-=padding;max+=padding;}
  if(Number.isFinite(config.y_min))min=config.y_min;
@@ -92,6 +206,63 @@ export function yRange(series,config={}) {
   else min=max-Math.max(1,Math.abs(max)*0.05);
  }
  return [min,max];
+}
+const zoneFormats=new Map();
+function localParts(t,zone){
+ let format=zoneFormats.get(zone);if(!format){format=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});zoneFormats.set(zone,format);}
+ return Object.fromEntries(format.formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,Number(p.value)]));
+}
+function localEpoch(t,zone){const p=localParts(t,zone);return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);}
+function midnight(nominal,zone){
+ let t=nominal;for(let i=0;i<6;i++){const next=nominal-(localEpoch(t,zone)-t);if(next===t)return t;t=next;}
+ // Midnight can be skipped by a timezone transition. Find the first valid
+ // instant of the requested local date rather than oscillating across it.
+ let low=nominal-36*3600000,high=nominal+36*3600000;
+ while(high-low>1000){const mid=Math.floor((low+high)/2000)*1000,p=localParts(mid,zone);if(Date.UTC(p.year,p.month-1,p.day)>=nominal)high=mid;else low=mid;}
+ return high;
+}
+export function periodBounds(t,period,zone='UTC'){
+ zone ||= 'UTC';const p=localParts(t,zone),size={minute:60000,quarter_hour:900000,hour:3600000}[period];
+ if(size){const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second),a=t-(local%size)-(t%1000);return [a,a+size];}
+ let nominal=Date.UTC(p.year,p.month-1,period==='month'?1:p.day);let next;
+ if(period==='week'){const day=new Date(nominal).getUTCDay();nominal-=((day+6)%7)*86400000;next=nominal+7*86400000;}
+ else if(period==='month')next=Date.UTC(p.year,p.month,1);
+ else next=nominal+86400000;
+ return [midnight(nominal,zone),midnight(next,zone)];
+}
+export function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
+ if(period==='none')return series;
+ const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
+ return series.map(s=>{const points=[];let index=0;
+  for(const [a,b] of bounds){let cursor=a,total=0,duration=0,min=Infinity,max=-Infinity;
+   while(index<s.points.length&&s.points[index].t<=a)index++;
+   let value=index?s.points[index-1].v:null;const fragments=[{t:a,valid:value!==null}];
+   while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
+   const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
+   for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
+  }
+  return {id:s.id,points};
+ });
+}
+export function displayPoints(points,start,end,bins=1500){
+ let first=0,last=points.length;while(first<last){const mid=(first+last)>>1;if(points[mid].t<start)first=mid+1;else last=mid;}
+ const begin=Math.max(0,first-1);first=begin;last=points.length;while(first<last){const mid=(first+last)>>1;if(points[mid].t<=end)first=mid+1;else last=mid;}
+ const clipped=points.slice(begin,Math.min(points.length,first+1));if(clipped.length<=bins*4)return clipped;
+ const keep=new Set([0,clipped.length-1]);let bin=-1,group=[];
+ const flush=()=>{if(!group.length)return;keep.add(group[0]);keep.add(group.at(-1));let min=group[0],max=min;for(const i of group){if(clipped[i].v<clipped[min].v)min=i;if(clipped[i].v>clipped[max].v)max=i;}keep.add(min);keep.add(max);group=[];};
+ clipped.forEach((p,i)=>{const next=Math.floor((p.t-start)/(end-start)*bins);if(next!==bin){flush();bin=next;}if(p.v===null){flush();for(const j of [i-1,i,i+1])if(j>=0&&j<clipped.length)keep.add(j);}else group.push(i);});flush();
+ return [...keep].sort((a,b)=>a-b).map(i=>clipped[i]);
+}
+export function stackSeries(series,start,end){
+ const times=[...new Set([start,...series.flatMap(s=>s.points.map(p=>p.t).filter(t=>t>=start&&t<end))])].sort((a,b)=>a-b);
+ const result=series.map(s=>({id:s.id,points:[]}));
+ for(const t of times){let positive=0,negative=0,missing=false;
+  series.forEach((s,i)=>{const value=valueAt(s.points,t);missing ||= value===null;const base=value<0?negative:positive;
+   result[i].points.push({t,v:missing?null:base+value,base:missing?null:base});
+   if(value!==null){if(value<0)negative+=value;else positive+=value;}
+  });
+ }
+ return result;
 }
 export function historyUrl(config,end) {
  const start=new Date(end-config.hours_to_show*3600000).toISOString();

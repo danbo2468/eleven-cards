@@ -40,7 +40,7 @@ If you create the `www` directory for the first time, restart Home Assistant so 
 - Compact native `ha-card`, wrapping legend and distinct solid/dashed series.
 - Mouse hover, click/touch-pinned details; keyboard arrows, Home/End and Escape.
 - Automatic Dutch/English text and number/date formatting, light/dark theme inheritance.
-- Native `getConfigForm()` editor and Sections resizing.
+- Native Home Assistant form/selectors and Sections resizing. Each sensor is added once, with its name, complete line styling and fill in the same expandable entry; existing YAML remains compatible.
 - Recorder unavailable/unknown intervals remain real gaps.
 
 ## Examples
@@ -67,40 +67,94 @@ Omit either bound to let that side scale automatically. Set `title: ""` to hide 
 | --- | --- | --- | --- |
 | `entities` | Yes | — | 1–8 unique numeric `sensor.*` entity IDs. Array of strings. |
 | `title` | No | Localized History / Historie | Explicit text is preserved; empty string hides the title. |
-| `hours_to_show` | No | `24` | Numeric range 1–168 hours, fractional values accepted. No in-card range controls. |
+| `hours_to_show` | No | `24` | Numeric range 1–8760 hours; only retained recorder history is available. |
+| `series_options` | No | Concrete appearance per sensor | Per-sensor identity, line and fill settings, described below. RGB triplet or six-digit hex colors are accepted. |
+| `graph_mode` | No | `lines` | Separate `lines` or cumulative `stacked` lines; positive and negative values stack separately. |
+| `aggregation_period` | No | `none` | `none`, `minute`, `quarter_hour`, `hour`, `day`, `week`, or `month`; applies to every sensor separately. |
+| `aggregation_method` | No | `avg` | `min`, `max`, or recorder-held time-weighted `avg` over valid data within each period. |
 | `y_min` | No | Automatic | Exact shared Y-axis minimum in the sensor unit; blank/null restores automatic scaling. |
 | `y_max` | No | Automatic | Exact shared Y-axis maximum in the sensor unit; must exceed `y_min` when both are set. |
-| `line_style` | No | Alternating solid/dashed | `solid`, `dashed` or `dotted`; applies to all series. |
-| `line_interpolation` | No | `step` | Line geometry: `smooth` (curved), `linear` (point-to-point), or `step` (held value until the next point). Applies to lines and fills. Gaps remain gaps; recorded values and tooltip values are unchanged. |
-| `line_width` | No | `3.5` | Line width, 1–8 pixels; matches the energy graph default. |
-| `line_color` | No | Per-sensor palette | RGB triplet or six-digit hex; empty/null restores the palette. Gradient stops take priority. |
-| `show_fill` | No | `false` | Fill below each line; missing data stays a gap. |
-| `fill_color` | No | Follows line | Fixed RGB triplet or six-digit hex; empty/null follows line or gradient. |
-| `fill_opacity` | No | `0.18` | Fill opacity from 0 to 1. |
-| `fill_fade` | No | `true` | Fade fill towards the graph bottom. |
+| `show_legend` | No | `true` | Show sensor names, line keys and latest values. Hiding it preserves the unit, tooltip and all series. |
 | `show_hover_line` | No | `true` | Vertical hover guide; disabling keeps tooltip and markers. |
-| `gradient_mode` | No | `smooth` | `smooth` interpolates colors; `steps` switches colors at thresholds. |
-| `gradient_stops` | No | `[]` | 2–32 distinct `{value, color}` records, or empty/null to disable. |
+| `sync_hover` | No | `true` | Shares hover, touch and keyboard selection with other Eleven energy/history graphs on the same page. Disable for independent interaction. |
+| `hover_sync_group` | No | Empty | Only cards with the same group synchronize; empty uses the default group. Guides follow the exact timestamp, not the same pixel position. Outside a receiving chart's time range, its tooltip and guide are hidden. |
+### Settings ownership
+
+The editor separates Graph (title, time range, Y bounds, legend and hover), shared Data processing, and Sensors. Open one sensor entry to select its entity once and adjust its name, line and fill. There are no duplicate global appearance controls. Each of two sensors has exactly the same independent controls as a single sensor.
+
+Each `series_options` record supports:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `entity` | Required | A sensor listed in `entities`. |
+| `name` | Sensor friendly name | Optional display name. |
+| `line_style_source` | Own appearance | Optional entity ID of another sensor on this card. Follow its width, dash style and interpolation live; color, gradient and fill remain independent. Missing sources, self-links and cycles are rejected. |
+| `line_width` | `3.5` | 1–8 pixels, independently per sensor unless explicitly following another sensor. |
+| `line_style` | Alternating solid/dashed | `solid`, `dashed` or `dotted`. |
+| `line_interpolation` | `step` | `smooth`, `linear` or recorder-held `step`; applies to that sensor's line and fill. |
+| `color_mode` | `fixed` for new sensors | `fixed` shows one color picker; `gradient` shows value/color stops and transition mode. |
+| `color` | Distinct sensor palette | Fixed line color. Dormant while gradient mode is selected. |
+| `gradient_mode` | `smooth` | `smooth` color interpolation or `steps` hard thresholds; not measurement interpolation. |
+| `gradient_stops` | `[]` | 2–32 distinct `{value,color}` records required in gradient mode. Initial editor stops use values 0 and 1: adjust them to your sensor's scale. |
+| `show_fill` | `false` | Only this sensor's fill. Other fill controls appear when enabled. |
+| `fill_opacity` | `0.18` | 0–1. |
+| `fill_fade` | `true` | Fade towards the bottom of the graph. |
+| `fill_mode` | `line` | `line` follows this sensor's line color or gradient; `own` uses a separate color. |
+| `fill_color` | Sensor palette | Used only in `own` mode. Never changes the line. |
+
+With two or more sensors, the Line group offers **Line appearance → Own appearance / Follow [sensor]**. Following hides width, line style and interpolation controls and keeps the source visible. Changing the source updates linked lines immediately. Choosing Own appearance retains the current effective geometry and makes those controls editable again. Removing a source detaches its followers with their current geometry; replacing its entity updates the links. Reordering uses entity IDs, not row positions. The selector excludes self and circular links; a single sensor needs no source selector. Color, gradients and all fill controls remain editable per sensor.
+
+Mode changes retain dormant settings. Sensor reordering retains its appearance rather than assigning a new palette/style by position. Old top-level `line_style`, `line_width`, `line_interpolation`, `line_color`, fill options and gradient options remain accepted for existing YAML. Opening and saving the visual editor resolves their effective appearance into explicit per-sensor records and removes those legacy top-level appearance keys. It does not modify other cards or dashboards.
 
 ### Manual gradient
 Set `y_min` and/or `y_max` independently in the native editor or YAML. Unset bounds remain automatic. If data lies entirely outside a single fixed bound, the automatic side stays at least one unit (or 5% of that bound) away to keep a valid range. Lines and fills outside the selected range are clipped; tooltips still report actual values without an off-chart marker.
 
-The native editor exposes add/remove color-stop records with a sensor value and RGB color picker. Values are absolute sensor values in the shared unit, not percentages of the changing chart range. Stops are sorted automatically; values below/above the configured range keep the endpoint colors. A gradient applies to all series. Lines keep recorder-held step geometry; color interpolation does not interpolate measurements. A fixed `fill_color` overrides the fill gradient only.
+The native editor exposes add/remove color-stop records inside each sensor's Line group. Values are absolute sensor values in the shared unit, not percentages of the changing chart range. Stops are sorted automatically; values outside the configured range keep the endpoint colors. Explicit `color_mode` selects fixed color versus gradient, and explicit `fill_mode` selects follow-line versus own fill color. There is no hidden priority between these controls. Legacy YAML's old priority rules are preserved only when resolving configurations that omit the explicit modes.
 
 ```yaml
-line_style: dashed
-line_width: 3.5
-show_fill: true
-fill_opacity: 0.18
-fill_fade: true
-gradient_mode: smooth
-gradient_stops:
-  - value: 10
-    color: [30, 120, 240]
-  - value: 19
-    color: [40, 180, 100]
-  - value: 22
-    color: [240, 120, 30]
+series_options:
+  - entity: sensor.living_room_temperature
+    color_mode: gradient
+    gradient_mode: smooth
+    gradient_stops:
+      - value: 10
+        color: [30, 120, 240]
+      - value: 25
+        color: [240, 120, 30]
+  - entity: sensor.bedroom_temperature
+    color_mode: gradient
+    gradient_mode: steps
+    gradient_stops:
+      - value: 10
+        color: [160, 80, 220]
+      - value: 25
+        color: [40, 180, 100]
+```
+
+```yaml
+series_options:
+  - entity: sensor.living_room_temperature
+    color_mode: fixed
+    color: [33, 150, 243]
+    line_width: 2
+    line_style: solid
+    line_interpolation: step
+    show_fill: false
+  - entity: sensor.bedroom_temperature
+    color_mode: gradient
+    line_width: 5
+    line_style: dashed
+    line_interpolation: linear
+    gradient_mode: smooth
+    gradient_stops:
+      - value: 10
+        color: [30, 120, 240]
+      - value: 22
+        color: [240, 120, 30]
+    show_fill: true
+    fill_mode: line
+    fill_opacity: 0.18
+    fill_fade: true
 ```
 
 Use `gradient_mode: steps` for hard transitions. Hex colors such as `"#2878ef"` are also accepted in YAML. Duplicate values, invalid colors and out-of-range appearance options are rejected. Defaults preserve the existing sensor palette, step lines and unfilled graph.
@@ -121,7 +175,7 @@ REST returns a list of per-entity lists. First row identifies the entity; minima
 
 Lines use recorder-held state (step geometry). Query-start initial state is deliberately included as context, not labelled a new measurement. A state remains valid until the next recorder state; an absent update alone is not proof of a gap. Non-numeric/unavailable/unknown rows interrupt the line until a numeric state resumes; times before the first state stay unknown. Tooltips report held values at the selected time, not interpolated readings.
 
-Recorder/history must be enabled and include the sensors. Purged history cannot be recovered; partial missing data is labelled. Long-term statistics, resampling, aggregation, rate conversion and estimated gap filling are not implemented. Because `no_attributes` is used, historical unit changes cannot be detected: choose sensors whose units remain stable. Values are displayed with at most two decimal places; the plot retains numeric precision.
+Recorder/history must be enabled and include the sensors. Purged history cannot be recovered; partial missing data is labelled. Aggregation uses calendar boundaries in the Home Assistant time zone, Monday-based weeks and calendar months. Missing intervals remain gaps; averages use valid recorder-held durations, not sample counts. Zoom buttons and desktop drag selection change only the visible time range, never the configured aggregation. Long-term statistics, rate conversion and estimated gap filling are not implemented. Because `no_attributes` is used, historical unit changes cannot be detected: choose sensors whose units remain stable. Values are displayed with at most two decimal places; the plot retains numeric precision.
 
 Requests are at most one per card per minute after completion (except explicit config changes/retry), not per `hass` update. A 15-second timeout bounds waiting; older results are ignored on configuration changes or disconnection. The underlying `callApi` request cannot be physically aborted by this API; timed-out results never overwrite newer data. Loading, empty, unit mismatch and network errors have explicit states. No runtime CDN or dependencies.
 
@@ -147,7 +201,7 @@ Verify that Recorder records each sensor, the requested period is retained, and 
 
 ### Configuration is rejected
 
-Use 1–8 unique `sensor.*` entities, a period of 1–168 hours, and valid appearance settings. If both axis bounds are set, `y_min` must be lower than `y_max`. Gradient stops need 2–32 unique values and valid colors, or an empty list to disable the gradient.
+Use 1–8 unique `sensor.*` entities, a period of 1–8760 hours, and valid appearance settings. If both axis bounds are set, `y_min` must be lower than `y_max`. Gradient stops need 2–32 unique values and valid colors, or an empty list to disable the gradient.
 
 ## Build and test
 

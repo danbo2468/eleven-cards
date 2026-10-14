@@ -7,6 +7,51 @@ function graphLineStyle(style, width = 3.5) {
 }
 const graphAttribute = value => String(value).replace(/[&"<>]/g, c => ({'&':'&amp;','"':'&quot;','<':'&lt;','>':'&gt;'}[c]));
 class SharedGraph {
+  static hoverGroup(host) {
+    return host._config?.sync_hover === false ? null : (host._config?.hover_sync_group?.trim() || 'default');
+  }
+  static hoverState() {
+    const key = Symbol.for('eleven-cards.hover-sync.v1');
+    const target = globalThis.window ?? globalThis;
+    return target[key] ??= new Map();
+  }
+  static connectHover(host, receive) {
+    this.disconnectHover(host);
+    host._receiveSharedHover = receive;
+    host._sharedHoverListener = event => {
+      const {source, group, timestamp} = event.detail;
+      if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
+    };
+    window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+  }
+  static publishHover(host, timestamp) {
+    const group = this.hoverGroup(host);
+    if (!group || !host.isConnected || !Number.isFinite(timestamp)) return;
+    this.hoverState().set(group, {source: host, timestamp});
+    window.dispatchEvent(new CustomEvent('eleven-cards:hover-sync', {detail: {source: host, group, timestamp}}));
+  }
+  static clearHover(host) {
+    for (const [group, active] of this.hoverState()) {
+      if (active.source !== host) continue;
+      this.hoverState().delete(group);
+      window.dispatchEvent(new CustomEvent('eleven-cards:hover-sync', {detail: {source: host, group, timestamp: null}}));
+    }
+  }
+  static hoverSourceInEvent(host, event) {
+    const active = this.hoverState().get(this.hoverGroup(host));
+    return Boolean(active && event.composedPath().includes(active.source));
+  }
+  static restoreHover(host) {
+    if (!host.isConnected) return;
+    const active = this.hoverState().get(this.hoverGroup(host));
+    if (active && host.isConnected) host._receiveSharedHover?.(active.timestamp);
+  }
+  static disconnectHover(host) {
+    this.clearHover(host);
+    if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    host._sharedHoverListener = null;
+    host._receiveSharedHover = null;
+  }
   static interpolation(value, fallback = 'smooth') {
     const mode = value == null || value === '' ? fallback : value;
     if (!['smooth', 'linear', 'step'].includes(mode)) throw new Error('line_interpolation');
@@ -432,6 +477,19 @@ function selectDurationByPrice(points, totalMinutes, direction, options = {}) {
 
 // Dutch source strings are translation keys; no user-provided text is translated.
 const ENGLISH = Object.freeze({
+  "Prijsgrenzen en prijskleuren":"Price thresholds and colors",
+  "Tabelkolommen":"Table columns",
+  "Lijn":"Line",
+  "Vulling":"Fill",
+  "Vaste kleur":"Fixed color",
+  "Volg lijn":"Follow line",
+  "Eigen kleur":"Own color",
+  "Lijnkleur":"Line color",
+  "Vulkleurmodus":"Fill color mode",
+  "Dekking":"Opacity",
+  "Dezelfde grenzen gelden voor beide tarieven; lage afnameprijzen en hoge terugleverprijzen zijn gunstig.":"The same thresholds apply to both tariffs; low import prices and high export prices are favorable.",
+  "Leeg behoudt de bestaande themakleur. Volg lijn volgt ook de prijskleuren.":"Empty preserves the existing theme color. Follow line also follows price colors.",
+  "Prijskleuren volgen de prijsgrenzen. Vaste kleur geldt voor de hele lijn.":"Price colors follow the thresholds. Fixed color applies to the entire line.",
   "Lijnverloop": "Line interpolation",
   "Vloeiend": "Smooth",
   "Recht": "Linear",
@@ -473,6 +531,10 @@ const ENGLISH = Object.freeze({
   "Titel": "Title",
   "Titel tonen": "Show title",
   "Verticale hoverlijn": "Vertical hover line",
+  "Hover synchroniseren": "Synchronize hover",
+  "Hover-synchronisatiegroep": "Hover synchronization group",
+  "Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.": "Shares the selected time with other Eleven graphs on this page.",
+  "Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.": "Cards with the same group follow each other. Empty uses the default group.",
   "Gemiddelde prijslijn": "Average price line",
   "Gemiddelde prijs in tabel": "Average price in table",
   "Dag in tabel": "Day column in table",
@@ -625,6 +687,8 @@ const DEFAULT_CONFIG = Object.freeze({
   current_price_mode: 'import',
   show_title: true,
   show_hover_line: true,
+  sync_hover: true,
+  hover_sync_group: '',
   show_average_line: false,
   show_period_average: false,
   show_period_day: true,
@@ -729,6 +793,26 @@ const selectionModeOptions = () => [
   { value: 'minimum_blocks', label: editorText("Blokken met minimale duur") },
 ];
 
+class EnergySettingsEditor extends HTMLElement {
+  constructor(){super();this.attachShadow({mode:'open'});}
+  setConfig(c){this._data=DynamicEnergyPriceCard.editorConfig(c);this._render();}
+  set hass(h){this._hass=h;this._render();}
+  get hass(){return this._hass;}
+  connectedCallback(){this._render();}
+  _render(){
+    if(!this._data||!this._hass)return;
+    if(!this._form){
+      this.shadowRoot.innerHTML='<style>:host{display:block;min-width:0}ha-form{display:block;min-width:0}</style><ha-form></ha-form>';
+      this._form=this.shadowRoot.querySelector('ha-form');
+      this._form.addEventListener('value-changed',e=>{
+        e.stopPropagation();this._data=DynamicEnergyPriceCard.editorConfig({...this._data,...e.detail.value});this._render();
+        this.dispatchEvent(new CustomEvent('config-changed',{detail:{config:DynamicEnergyPriceCard.editorConfig(this._data)},bubbles:true,composed:true}));
+      });
+    }
+    const f=DynamicEnergyPriceCard.getConfigForm(this._data);this._form.hass=this._hass;this._form.data=this._data;this._form.schema=f.schema;
+    this._form.computeLabel=s=>f.computeLabel.call(this,s);this._form.computeHelper=s=>f.computeHelper.call(this,s);
+  }
+}
 class DynamicEnergyPriceCard extends HTMLElement {
   constructor() {
     super();
@@ -736,11 +820,77 @@ class DynamicEnergyPriceCard extends HTMLElement {
     this._hiddenSeries = new Set();
     this._onOutsidePointer = (event) => {
       const chart = this.shadowRoot?.querySelector('.chart');
-      if (chart && !event.composedPath().includes(chart)) this._hideTooltip();
+      if (chart && !event.composedPath().includes(chart) && !SharedGraph.hoverSourceInEvent(this, event)) this._hideTooltip();
     };
   }
 
-  static getConfigForm() {
+  static editorConfig(config = {}) {
+    const clone = v => Array.isArray(v) ? v.map(clone) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x])=>[k,clone(x)])) : v;
+    const data = clone({...DEFAULT_CONFIG,...config});
+    for (const p of ['import','export','consumption']) {
+      data[`${p}_line_interpolation`] ??= data.line_interpolation;
+      data[`${p}_color_mode`] ??= rgbColorToCss(data[`${p}_line_color`]) ? 'fixed' : p==='consumption' ? 'fixed' : 'price';
+      data[`${p}_fill_mode`] ??= p==='consumption' && !rgbColorToCss(data[`${p}_fill_color`]) ? 'line' : 'own';
+      data[`${p}_fill_opacity`] ??= data[`${p}_fill_fade`]!==false ? p==='consumption' ? .18 : .22 : .14;
+    }
+    delete data.line_interpolation;
+    return data;
+  }
+  static async getConfigElement() {
+    if (!customElements.get('ha-form')) {
+      const helpers=await window.loadCardHelpers(),card=await helpers.createCardElement({type:'entities',entities:[]});
+      await card.constructor.getConfigElement();await customElements.whenDefined('ha-form');
+    }
+    if(!customElements.get('eleven-energy-editor'))customElements.define('eleven-energy-editor',EnergySettingsEditor);
+    return document.createElement('eleven-energy-editor');
+  }
+  static getConfigForm(config) {
+    const data=this.editorConfig(config),base=this._legacyConfigForm(),all=new Map();
+    const collect=s=>s.forEach(f=>f.schema?collect(f.schema):all.set(f.name,f));collect(base.schema);
+    const field=name=>all.get(name),group=(name,title,schema)=>({type:'expandable',name,get title(){return editorText(title);},flatten:true,schema});
+    const select=(name,options)=>({name,selector:{select:{mode:'dropdown',get options(){return options.map(([value,label])=>({value,label:editorText(label)}));}}}});
+    const line=p=>group(p+'_line_settings','Lijn',[
+      field(p+'_line_width'),field(p+'_line_style'),{...select(p+'_line_interpolation',[['smooth','Vloeiend'],['linear','Recht'],['step','Trapvormig']]),default:'smooth'},
+      ...(p==='consumption'?[field(p+'_line_color')]:[
+        select(p+'_color_mode',[['price','Prijskleuren'],['fixed','Vaste kleur']]),
+        ...(data[p+'_color_mode']==='fixed'?[field(p+'_line_color')]:[])
+      ])
+    ]);
+    const fill=p=>group(p+'_fill_settings','Vulling',[
+      field('show_'+p+'_fill'),...(data['show_'+p+'_fill']?[
+        {name:p+'_fill_opacity',selector:{number:{min:0,max:1,step:.01,mode:'slider'}}},field(p+'_fill_fade'),
+        select(p+'_fill_mode',[['line','Volg lijn'],['own','Eigen kleur']]),
+        ...(data[p+'_fill_mode']==='own'?[field(p+'_fill_color')]:[])
+      ]:[])
+    ]);
+    const favorable=p=>group(p+'_favorable_settings','Gunstige perioden',[
+      field(p==='import'?'cheapest_hours':'export_best_hours'),field(p+'_selection_mode'),
+      ...(data[p+'_selection_mode']==='minimum_blocks'?[field(p+'_minimum_duration')]:[]),
+      field(p+'_favorable_color'),field(p==='import'?'show_cheapest_table':'show_export_table')
+    ]);
+    const schema=[
+      group('graph_settings','Grafiek',['title','show_title','graph_mode','current_price_mode','tomorrow_after','show_average_line','show_price_levels','show_hover_line','sync_hover',...(data.sync_hover?['hover_sync_group']:[])].map(field)),
+      group('price_settings','Prijsgrenzen en prijskleuren',[
+        ...['cheap_price','normal_price','expensive_price'].map(field),
+        group('price_color_settings','Prijskleuren',['cheap_color','normal_color','expensive_color','zero_color','negative_color'].map(field))
+      ]),
+      group('import_settings','Afname',[field('entity'),line('import'),fill('import'),favorable('import')]),
+      group('export_settings','Teruglevering',[field('export_entity'),field('export_price_offset'),line('export'),fill('export'),favorable('export')]),
+      group('consumption_settings','Netafname energie',[field('show_consumption'),...(data.show_consumption?[field('consumption_entity'),line('consumption'),fill('consumption')]:[])]),
+      group('table_settings','Tabelkolommen',['day','type','start','end','duration','average'].map(c=>field('show_period_'+c)))
+    ];
+    const newLabels={graph_settings:'Grafiek',price_settings:'Prijsgrenzen en prijskleuren',table_settings:'Tabelkolommen'};
+    const suffix={line_interpolation:'Lijnverloop',color_mode:'Lijnkleur',fill_mode:'Vulkleurmodus',fill_opacity:'Dekking',line_settings:'Lijn',fill_settings:'Vulling'};
+    return {schema,computeLabel:function(s){const key=s?.name??'',label=newLabels[key]??suffix[key.replace(/^(import|export|consumption)_/,'')];return label?translate(label,resolveLanguage(this?.hass??frontendHass())):base.computeLabel.call(this,s);},computeHelper:function(s){
+      const key=s?.name??'',lang=resolveLanguage(this?.hass??frontendHass());
+      if(key==='price_settings')return translate('Dezelfde grenzen gelden voor beide tarieven; lage afnameprijzen en hoge terugleverprijzen zijn gunstig.',lang);
+      if(['import_line_color','export_line_color'].includes(key))return translate('Optioneel. Leeg gebruikt de primaire Home Assistant-kleur.',lang);
+      if(key.endsWith('_fill_color'))return translate('Leeg behoudt de bestaande themakleur. Volg lijn volgt ook de prijskleuren.',lang);
+      if(key.endsWith('_color_mode'))return translate('Prijskleuren volgen de prijsgrenzen. Vaste kleur geldt voor de hele lijn.',lang);
+      return base.computeHelper.call(this,s);
+    }};
+  }
+  static _legacyConfigForm() {
     const labels = {
       general_settings: 'Algemeen',
       line_interpolation: 'Lijnverloop',
@@ -763,6 +913,8 @@ class DynamicEnergyPriceCard extends HTMLElement {
       title: "Titel",
       show_title: "Titel tonen",
       show_hover_line: "Verticale hoverlijn",
+      sync_hover: "Hover synchroniseren",
+      hover_sync_group: "Hover-synchronisatiegroep",
       show_average_line: "Gemiddelde prijslijn",
       show_period_average: "Gemiddelde prijs in tabel",
       show_period_day: "Dag in tabel",
@@ -844,6 +996,8 @@ class DynamicEnergyPriceCard extends HTMLElement {
             { name: 'title', selector: { text: {} } },
             { name: 'show_title', default: DEFAULT_CONFIG.show_title, selector: { boolean: {} } },
             { name: 'show_hover_line', default: DEFAULT_CONFIG.show_hover_line, selector: { boolean: {} } },
+            { name: 'sync_hover', default: true, selector: { boolean: {} } },
+            { name: 'hover_sync_group', selector: { text: {} } },
             { name: 'show_average_line', default: DEFAULT_CONFIG.show_average_line, selector: { boolean: {} } },
             { name: 'show_period_average', default: DEFAULT_CONFIG.show_period_average, selector: { boolean: {} } },
             ...['day', 'type', 'start', 'end', 'duration'].map(column => ({ name: `show_period_${column}`, default: DEFAULT_CONFIG[`show_period_${column}`], selector: { boolean: {} } })),
@@ -964,6 +1118,8 @@ class DynamicEnergyPriceCard extends HTMLElement {
         current_price_mode: "Staat los van de gekozen grafiekweergave.",
         show_title: "Verberg de titel om actieve gunstige-urencontext op die plek te tonen.",
         show_hover_line: "Toont een verticale hulplijn bij het actieve prijsinterval.",
+        sync_hover: "Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.",
+        hover_sync_group: "Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.",
         show_average_line: "Toont per zichtbare tariefreeks een gelabeld gemiddelde.",
         show_period_average: "Toont de gemiddelde prijs per periode in de afname- en teruglevertabel, in ct/kWh.",
         show_price_levels: "Toont de lijnen en prijslabels voor goedkoop, normaal en duur.",
@@ -1016,11 +1172,21 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   setConfig(config) {
     if (!config?.entity) throw new Error(this._t("Een prijsentity voor afname is verplicht."));
+    if (config.sync_hover !== undefined && typeof config.sync_hover !== 'boolean') throw new Error('sync_hover');
+    if (config.hover_sync_group != null && typeof config.hover_sync_group !== 'string') throw new Error('hover_sync_group');
+    SharedGraph.clearHover(this);
     this._config = {
       ...DEFAULT_CONFIG,
       ...config,
     };
     this._config.line_interpolation = SharedGraph.interpolation(this._config.line_interpolation);
+    for(const p of ['import','export','consumption']) {
+      if(this._config[p+'_line_interpolation']!==undefined)SharedGraph.interpolation(this._config[p+'_line_interpolation']);
+      const cm=this._config[p+'_color_mode'],fm=this._config[p+'_fill_mode'],opacity=this._config[p+'_fill_opacity'];
+      if(cm!==undefined&&!['fixed','price'].includes(cm))throw Error(p+'_color_mode');
+      if(fm!==undefined&&!['own','line'].includes(fm))throw Error(p+'_fill_mode');
+      if(opacity!==undefined&&(!Number.isFinite(opacity)||opacity<0||opacity>1))throw Error(p+'_fill_opacity');
+    }
     if (!['import', 'both', 'export'].includes(this._config.graph_mode)) this._config.graph_mode = 'import';
     if (!['import', 'both', 'export', 'none'].includes(this._config.current_price_mode)) this._config.current_price_mode = 'import';
     this._config.import_selection_mode = normalizeSelectionMode(this._config.import_selection_mode);
@@ -1095,6 +1261,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   connectedCallback() {
+    SharedGraph.connectHover(this, timestamp => this._receiveHover(timestamp));
     window.addEventListener('pointerdown', this._onOutsidePointer);
     this._watchConsumptionConnection();
     this._observeConsumptionSize();
@@ -1102,6 +1269,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    SharedGraph.disconnectHover(this);
     window.removeEventListener('pointerdown', this._onOutsidePointer);
     this._unwatchConsumptionConnection();
     this._consumptionResizeObserver?.disconnect();
@@ -1322,21 +1490,21 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const yRange = maximum - minimum;
     const xFor = (timestamp) => PLOT.left + ((timestamp - start) / span) * plotWidth;
     const yFor = (price) => PLOT.top + ((maximum - price) / yRange) * plotHeight;
-    const importPath = graphShowsImport ? seriesPath(timeline, 'importPrice', xFor, yFor, intervalMs, this._config.line_interpolation) : '';
-    const exportPath = graphShowsExport ? seriesPath(timeline, 'exportPrice', xFor, yFor, intervalMs, this._config.line_interpolation) : '';
+    const importPath = graphShowsImport ? seriesPath(timeline, 'importPrice', xFor, yFor, intervalMs, this._config.import_line_interpolation ?? this._config.line_interpolation) : '';
+    const exportPath = graphShowsExport ? seriesPath(timeline, 'exportPrice', xFor, yFor, intervalMs, this._config.export_line_interpolation ?? this._config.line_interpolation) : '';
     const importAppearance = this._seriesAppearance('import');
     const exportAppearance = this._seriesAppearance('export');
     const consumptionAppearance = this._seriesAppearance('consumption');
     const energyMaximum = Math.max(0.1, ...consumptionPoints.map(point => Number.isFinite(point.energy) ? point.energy * 1.12 : 0));
     const energyYFor = energy => PLOT.top + (1 - energy / energyMaximum) * plotHeight;
-    const consumptionPath = graphShowsConsumption ? seriesPath(consumptionPoints, 'energy', xFor, energyYFor, consumptionIntervalMs, this._config.line_interpolation) : '';
+    const consumptionPath = graphShowsConsumption ? seriesPath(consumptionPoints, 'energy', xFor, energyYFor, consumptionIntervalMs, this._config.consumption_line_interpolation ?? this._config.line_interpolation) : '';
     const energyLabels = graphShowsConsumption ? `<span class="chart-label energy-unit">kWh</span>` + createPriceTicks(0, energyMaximum, 5).map(value => `<span class="chart-label energy-axis-label" style="top:${energyYFor(value) / svgHeight * 100}%">${new Intl.NumberFormat(this._language, { maximumFractionDigits: 2 }).format(value)}</span>`).join('') : '';
     const consumptionFillColor = rgbColorToCss(this._config.consumption_fill_color) ?? consumptionAppearance.stroke;
     let consumptionAreaPath = '';
     if (graphShowsConsumption && this._config.show_consumption_fill === true) {
       let segment = [];
       const close = () => {
-        if (segment.length) consumptionAreaPath += `${seriesPath(segment, 'energy', xFor, energyYFor, consumptionIntervalMs, this._config.line_interpolation)} L ${xFor(segment.at(-1).timestamp)} ${PLOT.top + plotHeight} L ${xFor(segment[0].timestamp)} ${PLOT.top + plotHeight} Z `;
+        if (segment.length) consumptionAreaPath += `${seriesPath(segment, 'energy', xFor, energyYFor, consumptionIntervalMs, this._config.consumption_line_interpolation ?? this._config.line_interpolation)} L ${xFor(segment.at(-1).timestamp)} ${PLOT.top + plotHeight} L ${xFor(segment[0].timestamp)} ${PLOT.top + plotHeight} Z `;
         segment = [];
       };
       for (const point of consumptionPoints) {
@@ -1533,16 +1701,16 @@ class DynamicEnergyPriceCard extends HTMLElement {
               viewBox: `0 0 ${svgWidth} ${svgHeight}`,
               defs: `<defs>
                 <linearGradient id="consumption-area-gradient" x1="0" y1="${PLOT.top}" x2="0" y2="${PLOT.top + plotHeight}" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="var(--consumption-fill-color)" stop-opacity="0.18" />
-                  <stop offset="100%" stop-color="var(--consumption-fill-color)" stop-opacity="0.01" />
+                  <stop offset="0%" stop-color="var(--consumption-fill-color)" stop-opacity="${this._config.consumption_fill_opacity ?? .18}" />
+                  <stop offset="100%" stop-color="var(--consumption-fill-color)" stop-opacity="${(this._config.consumption_fill_opacity ?? .18)*(.01/.18)}" />
                 </linearGradient>
                 <linearGradient id="import-area-gradient" x1="0" y1="${PLOT.top}" x2="0" y2="${PLOT.top + plotHeight}" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="var(--import-fill-color)" stop-opacity="0.22" />
-                  <stop offset="100%" stop-color="var(--import-fill-color)" stop-opacity="0.01" />
+                  <stop offset="0%" stop-color="var(--import-fill-color)" stop-opacity="${this._config.import_fill_opacity ?? .22}" />
+                  <stop offset="100%" stop-color="var(--import-fill-color)" stop-opacity="${(this._config.import_fill_opacity ?? .22)*(.01/.22)}" />
                 </linearGradient>
                 <linearGradient id="export-area-gradient" x1="0" y1="${PLOT.top}" x2="0" y2="${PLOT.top + plotHeight}" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="var(--export-fill-color)" stop-opacity="0.22" />
-                  <stop offset="100%" stop-color="var(--export-fill-color)" stop-opacity="0.01" />
+                  <stop offset="0%" stop-color="var(--export-fill-color)" stop-opacity="${this._config.export_fill_opacity ?? .22}" />
+                  <stop offset="100%" stop-color="var(--export-fill-color)" stop-opacity="${(this._config.export_fill_opacity ?? .22)*(.01/.22)}" />
                 </linearGradient>
                 <linearGradient id="price-line-gradient" x1="0" y1="${PLOT.top}" x2="0" y2="${PLOT.top + plotHeight}" gradientUnits="userSpaceOnUse">
                   <stop offset="0%" stop-color="var(--expensive)" /><stop offset="${expensiveOffset}%" stop-color="var(--expensive)" />
@@ -1553,6 +1721,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
                   <stop offset="${normalOffset}%" stop-color="var(--normal)" /><stop offset="${cheapOffset}%" stop-color="var(--expensive)" />
                   <stop offset="100%" stop-color="var(--expensive)" />
                 </linearGradient>
+                ${['import','export','consumption'].map(p=>`<linearGradient id="${p}-follow-fade"><stop offset="0" stop-color="white"/><stop offset="1" stop-color="white" stop-opacity="${.01/(p==='consumption'?.18:.22)}"/></linearGradient><mask id="${p}-follow-mask" maskUnits="userSpaceOnUse" x="0" y="${PLOT.top}" width="${svgWidth}" height="${plotHeight}"><rect x="0" y="${PLOT.top}" width="${svgWidth}" height="${plotHeight}" fill="url(#${p}-follow-fade)"/></mask>`).join('')}
               </defs>`,
               before: selectionBandRects + levelLines + averageLine,
               fills: [
@@ -1581,6 +1750,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     this._graph.restore(this);
     this._chartHasLoaded = this._graph.loaded;
     this._bindInteractions();
+    SharedGraph.restoreHover(this);
   }
 
   _currentMetric(label, point, type, selected, enabled) {
@@ -1653,7 +1823,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const fallbackStyle = type === 'export' ? 'dashed' : 'solid';
     const style = normalizeLineStyle(this._config?.[`${prefix}_line_style`], fallbackStyle);
     const width = normalizeLineWidth(type === 'consumption' ? this._config?.consumption_line_width ?? 1.5 : this._config?.[`${prefix}_line_width`], type === 'consumption' ? 1.5 : 3.5);
-    const color = rgbColorToCss(this._config?.[`${prefix}_line_color`]);
+    const color = this._config?.[`${prefix}_color_mode`]==='price' ? null : rgbColorToCss(this._config?.[`${prefix}_line_color`]) ?? (this._config?.[`${prefix}_color_mode`]==='fixed' && type!=='consumption' ? 'var(--primary-color)' : null);
     const {dash, cap} = graphLineStyle(style, width);
     return {
       style,
@@ -1675,7 +1845,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   _toggleSeries(type) {
     if (this._hiddenSeries.has(type)) this._hiddenSeries.delete(type);
     else this._hiddenSeries.add(type);
-    this._hideTooltip();
+    this._hideTooltip(false);
     this._render();
   }
 
@@ -1754,17 +1924,27 @@ class DynamicEnergyPriceCard extends HTMLElement {
       live: `${this._t('Netafname')} ${value}, ${range}` };
   }
 
-  _showPoint(index) {
+  _receiveHover(timestamp) {
+    if (!this._chart || timestamp === null || timestamp < this._chart.start || timestamp >= this._chart.start + this._chart.span) { this._hideTooltip(false); return; }
+    const index = this._chart.timeline.findIndex(p => p.timestamp <= timestamp && timestamp < p.timestamp + this._chart.intervalMs);
+    if (index < 0) { this._hideTooltip(false); return; }
+    this._showPoint(index, false, timestamp);
+  }
+
+  _showPoint(index, publish = true, timestamp) {
     const point = this._chart.timeline[index];
     if (!point) return;
     this._activeIndex = index;
     const nextTime = point.timestamp + this._chart.intervalMs;
+    timestamp ??= point.timestamp;
+    this._hoverTimestamp = timestamp;
     const x = this._chart.xFor(point.timestamp);
+    const guideX = this._chart.xFor(timestamp);
     const line = this.shadowRoot.querySelector('.hover-line');
     line?.removeAttribute('hidden');
     if (line) {
-      line.setAttribute('x1', x);
-      line.setAttribute('x2', x);
+      line.setAttribute('x1', guideX);
+      line.setAttribute('x2', guideX);
     }
 
     const entries = [];
@@ -1848,9 +2028,12 @@ class DynamicEnergyPriceCard extends HTMLElement {
     }
     const live = this.shadowRoot.querySelector('.sr-only');
     live.textContent = `${this._formatTime(point.timestamp, this._chart.timeZone)} ${this._t("tot")} ${this._formatTime(nextTime, this._chart.timeZone)}, ${liveEntries.join(', ')}.`;
+    if (publish) SharedGraph.publishHover(this, timestamp);
   }
 
-  _hideTooltip() {
+  _hideTooltip(publish = true) {
+    if (publish) SharedGraph.clearHover(this);
+    this._hoverTimestamp = null;
     this.shadowRoot.querySelector('.tooltip')?.setAttribute('hidden', '');
     this.shadowRoot.querySelector('.hover-line')?.setAttribute('hidden', '');
     this.shadowRoot.querySelector('.hover-dot[data-series="import"]')?.setAttribute('hidden', '');
@@ -1968,6 +2151,10 @@ class DynamicEnergyPriceCard extends HTMLElement {
       .import-area.fade { fill: url(#import-area-gradient); opacity: 1; }
       .export-area.fade { fill: url(#export-area-gradient); opacity: 1; }
       ${graphStyles()}
+      ${['import','export','consumption'].map(p=>{
+        const c=this._config,follow=c?.[p+'_fill_mode']==='line',opacity=c?.[p+'_fill_opacity'];
+        return follow?`.${p}-area,.${p}-area.fade{fill:${this._seriesAppearance(p).stroke};opacity:${opacity??(c[p+'_fill_fade']!==false?(p==='consumption'?.18:.22):.14)};${c[p+'_fill_fade']!==false?`mask:url(#${p}-follow-mask);`:''}}`:opacity===undefined?'':`.${p}-area:not(.fade){opacity:${opacity};}`;
+      }).join('')}
       .level-line { stroke-opacity: 0.55; stroke-dasharray: 5 5; stroke-width: 1; vector-effect: non-scaling-stroke; }
       .cheap-level[data-level-class="import-level"] { stroke: var(--cheap); }
       .normal-level { stroke: var(--normal); }

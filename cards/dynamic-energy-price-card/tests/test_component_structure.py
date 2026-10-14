@@ -80,7 +80,7 @@ class CardSourceTests(unittest.TestCase):
 
     def test_card_preserves_native_visual_editor(self):
         card = CARD.read_text(encoding="utf-8")
-        self.assertIn('static getConfigForm()', card)
+        self.assertIn('static getConfigForm(config)', card)
         self.assertIn('computeHelper:', card)
         self.assertIn("mode: 'slider'", card)
         self.assertNotIn('class DynamicEnergyPriceCardEditor', card)

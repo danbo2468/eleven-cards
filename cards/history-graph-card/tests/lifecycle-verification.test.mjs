@@ -1,5 +1,5 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-globalThis.HTMLElement=class{attachShadow(){return this.shadowRoot={innerHTML:'',querySelector:()=>null};}};globalThis.customElements={get:()=>undefined,define(){}};globalThis.window={};globalThis.document={addEventListener(){},removeEventListener(){},querySelector:()=>null};
+globalThis.HTMLElement=class{attachShadow(){return this.shadowRoot={innerHTML:'',querySelector:()=>null};}};globalThis.customElements={get:()=>undefined,define(){}};globalThis.window=new EventTarget();globalThis.document={addEventListener(){},removeEventListener(){},querySelector:()=>null};
 const tick=()=>new Promise(r=>setImmediate(r));
 test('contract verification: timeout at 15s, retry interval at 60s, disconnect stops subsequent polls',async t=>{
  const {HistoryGraphCard:C}=await import('../src/history-graph-card.js');

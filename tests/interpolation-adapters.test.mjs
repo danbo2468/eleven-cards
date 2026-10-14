@@ -16,7 +16,7 @@ vm.runInContext(source.replace(/^import\s*\{[\s\S]*?\}\s*from\s*['"][^'"]+['"];\
 const fields=s=>s.flatMap(f=>f.schema?fields(f.schema):[f]);
 test('both cards expose localized line interpolation with preserved defaults',()=>{
  for(const [Card,fallback] of [[Energy,'smooth'],[History,'step']]){
-  const form=Card.getConfigForm(),field=fields(form.schema).find(f=>f.name==='line_interpolation');
+  const form=Card===History?Card.getSeriesConfigForm():Card.getConfigForm(),field=fields(form.schema).find(f=>f.name===(Card===History?'line_interpolation':'import_line_interpolation'));
   assert.ok(field);assert.equal(field.default,fallback);
   assert.equal(form.computeLabel.call({hass:{language:'nl'}},field),'Lijnverloop');
   assert.equal(form.computeLabel.call({hass:{language:'en'}},field),'Line interpolation');
@@ -26,6 +26,24 @@ test('both cards expose localized line interpolation with preserved defaults',()
  assert.throws(()=>validateConfig({entities:['sensor.a'],line_interpolation:'bad'}));
  const e=new Energy();e.setConfig({entity:'sensor.a'});assert.equal(e._config.line_interpolation,'smooth');
  assert.throws(()=>e.setConfig({entity:'sensor.a',line_interpolation:'bad'}));
+});
+test('both cards expose localized hover synchronization and a group in the native editor',()=>{
+ for(const Card of [Energy,History]){
+  const form=Card.getConfigForm();
+  const sync=fields(form.schema).find(f=>f.name==='sync_hover');
+  const group=fields(form.schema).find(f=>f.name==='hover_sync_group');
+  assert.ok(sync);assert.equal(sync.default,true);assert.ok(group?.selector.text);
+  assert.equal(form.computeLabel.call({hass:{language:'nl'}},sync),'Hover synchroniseren');
+  assert.equal(form.computeLabel.call({hass:{language:'en'}},sync),'Synchronize hover');
+ }
+});
+test('hover options have explicit defaults and reject malformed manual configuration',()=>{
+ const h=validateConfig({entities:['sensor.a']});assert.equal(h.sync_hover,true);assert.equal(h.hover_sync_group,'');
+ assert.throws(()=>validateConfig({entities:['sensor.a'],sync_hover:'false'}));
+ assert.throws(()=>validateConfig({entities:['sensor.a'],hover_sync_group:123}));
+ const e=new Energy();e.setConfig({entity:'sensor.a'});assert.equal(e._config.sync_hover,true);
+ assert.throws(()=>e.setConfig({entity:'sensor.a',sync_hover:'false'}));
+ assert.throws(()=>e.setConfig({entity:'sensor.a',hover_sync_group:123}));
 });
 test('history lines and gap-safe fills follow each selected interpolation',()=>{
  for(const [mode,command] of [['smooth',' C '],['linear',' L '],['step',' V ']]){

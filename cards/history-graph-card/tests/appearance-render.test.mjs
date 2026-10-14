@@ -17,6 +17,40 @@ test('renders energy-card line styling, value gradient, gap-safe fill and fading
  assert.match(render({show_fill:true,fill_color:[12,34,56]}).shadowRoot.innerHTML,/fill="rgb\(12,34,56\)"/);
  assert.match(render({line_color:[0,0,0]}).shadowRoot.innerHTML,/stroke="rgb\(0,0,0\)"/);
 });
+test('two sensors have independent line geometry and fill, also after legacy editor migration',()=>{
+ const options={show_fill:true,series_options:[
+  {entity:'sensor.a',color_mode:'fixed',color:'#ff0000',line_width:2,line_style:'solid',line_interpolation:'linear',show_fill:false},
+  {entity:'sensor.b',color_mode:'gradient',gradient_stops:[{value:10,color:'#000000'},{value:30,color:'#ffffff'}],line_width:7,line_style:'dotted',line_interpolation:'smooth',show_fill:true,fill_mode:'own',fill_color:'#123456',fill_opacity:0.6,fill_fade:false}
+ ]};
+ const c=render(options),html=c.shadowRoot.innerHTML;
+ assert.equal(c._appearance(0).width,2);assert.equal(c._appearance(1).width,7);
+ assert.equal(c._appearance(1).style,'dotted');
+ assert.equal((html.match(/class="series-fill"/g)??[]).length,1);
+ assert.match(html,/fill="#123456"/);assert.match(html,/fill-opacity="0.6"/);assert.doesNotMatch(html,/mask="url/);
+ const lines=[...html.matchAll(/<path[^>]+class="series-line"[^>]+>/g)].map(m=>m[0]);
+ assert.match(lines[0],/ L /);assert.doesNotMatch(lines[0],/ V | C /);assert.match(lines[1],/ C /);
+});
+test('each sensor renders its own gradient for lines, fill and value colors',()=>{
+ const card=render({show_fill:true,series_options:[
+  {entity:'sensor.a',gradient_stops:[{value:10,color:'#000000'},{value:30,color:'#ff0000'}]},
+  {entity:'sensor.b',gradient_mode:'steps',gradient_stops:[{value:10,color:'#0000ff'},{value:30,color:'#00ff00'}]}
+ ]});
+ assert.equal(card._appearance(0,20).color,'rgb(128,0,0)');
+ assert.equal(card._appearance(1,20).color,'rgb(0,0,255)');
+ const html=card.shadowRoot.innerHTML;
+ for(const i of [0,1]){assert.match(html,new RegExp(`id="history-colors-${i}"`));assert.match(html,new RegExp(`stroke="url\\(#history-colors-${i}\\)"`));assert.match(html,new RegExp(`fill="url\\(#history-colors-${i}\\)"`));}
+});
+test('sensor fixed colors and explicitly empty gradients take priority over shared defaults',()=>{
+ const card=render({gradient_stops:[{value:10,color:'#000000'},{value:30,color:'#ffffff'}],series_options:[{entity:'sensor.a',color:[0,0,0]},{entity:'sensor.b',gradient_stops:[]}]});
+ assert.equal(card._appearance(0,20).color,'rgb(0,0,0)');assert.equal(card._appearance(0).stroke,'rgb(0,0,0)');
+ assert.equal(card._appearance(1).stroke,'#e78a14');
+ assert.doesNotMatch(card.shadowRoot.innerHTML,/id="history-colors-/);
+ const fallback=render({gradient_stops:[{value:10,color:'#000000'},{value:30,color:'#ffffff'}]});assert.equal(fallback._appearance(0,20).color,'rgb(128,128,128)');
+});
+test('legend visibility belongs to the graph and preserves tooltip/series',()=>{
+ const c=render({show_legend:false});assert.doesNotMatch(c.shadowRoot.innerHTML,/class="legend"/);assert.match(c.shadowRoot.innerHTML,/class="series-line"/);assert.match(c.shadowRoot.innerHTML,/class="tooltip"/);
+ assert.ok(C.getConfigForm().schema.flatMap(s=>s.schema??[s]).some(s=>s.name==='show_legend'));
+});
 test('manual bounds reach rendered axis and native editor',()=>{
  const card=render({y_min:15,y_max:25});
  assert.deepEqual(card._range,[15,25]);
@@ -26,8 +60,8 @@ test('manual bounds reach rendered axis and native editor',()=>{
  assert.equal(form.computeLabel.call({hass:{language:'nl'}},{name:'y_min'}),'Minimum Y-as');
 });
 test('native form exposes localized appearance and gradient controls',()=>{
- const form=C.getConfigForm();const all=form.schema.flatMap(s=>s.schema??[s]);
- for(const name of ['line_style','line_width','line_color','show_fill','fill_opacity','fill_fade','gradient_mode','gradient_stops','show_hover_line'])assert.ok(all.some(s=>s.name===name),name);
+ const form=C.getSeriesConfigForm({color_mode:'gradient',show_fill:true,fill_mode:'own'});const all=form.schema.flatMap(s=>s.schema??[s]);
+ for(const name of ['line_style','line_width','show_fill','fill_color','fill_opacity','fill_fade','gradient_mode','gradient_stops'])assert.ok(all.some(s=>s.name===name),name);
  assert.equal(form.computeLabel.call({hass:{language:'nl'}},{name:'gradient_stops'}),'Kleurovergangen');
  assert.equal(form.computeLabel.call({hass:{language:'en'}},{name:'line_width'}),'Line width');
  assert.doesNotThrow(()=>form.computeLabel({}));

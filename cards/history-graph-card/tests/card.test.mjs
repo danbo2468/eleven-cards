@@ -1,15 +1,15 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 globalThis.HTMLElement=class {attachShadow(){return this.shadowRoot={innerHTML:'',querySelector:()=>null,querySelectorAll:()=>[]};}};
-globalThis.customElements={get:()=>undefined,define:()=>{}};globalThis.window={};globalThis.document={addEventListener(){},removeEventListener(){},querySelector(){return null;}};
+globalThis.customElements={get:()=>undefined,define:()=>{}};globalThis.window=new EventTarget();globalThis.document={addEventListener(){},removeEventListener(){},querySelector(){return null;}};
 const load=()=>import('../src/history-graph-card.js');
 const tick=()=>new Promise(r=>setImmediate(r));
 const state={state:'21',attributes:{unit_of_measurement:'°C',friendly_name:'Room'}};
 const response=id=>[[{entity_id:id,state:'21',last_changed:new Date(Date.now()-1000).toISOString()}]];
 test('native form localizes callback context, preserves custom title, registers Sections layout',async()=>{
  const {HistoryGraphCard:C}=await load();const form=C.getConfigForm();
- assert.deepEqual(form.schema.slice(0,3).map(s=>s.name),['entities','title','hours_to_show']);
- assert.equal(form.schema[0].selector.entity.multiple,true);
+ assert.deepEqual(form.schema.map(s=>s.name),['title','hours_to_show','graph_settings','data_processing']);
+ assert.equal(C.getSeriesConfigForm().schema[0].selector.entity.domain,'sensor');
  assert.equal(form.computeLabel.call({hass:{language:'nl'}},{name:'entities'}),'Sensoren');
  const card=new C();card.setConfig({entities:['sensor.a'],title:'Mijn expliciete titel'});
  assert.deepEqual(card.getGridOptions(),{rows:6,columns:12,min_rows:4,min_columns:6});

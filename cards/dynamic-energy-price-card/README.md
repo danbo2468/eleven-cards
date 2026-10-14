@@ -224,6 +224,8 @@ The default title is translated automatically. A title explicitly entered in YAM
 | `title` | No | Localized automatically | `Dynamic energy prices` / `Dynamische energieprijzen`. Explicit text is preserved literally. |
 | `show_title` | No | `true` | Shows the title. When hidden, active favorable-period context uses its position. |
 | `show_hover_line` | No | `true` | Shows a guide line for the active tooltip interval. |
+| `sync_hover` | No | `true` | Shares hover, touch and keyboard selection with other Eleven energy/history graphs on the same page. Disable for independent interaction. |
+| `hover_sync_group` | No | Empty | Only cards with the same group synchronize; empty uses the default group. Guides follow the exact timestamp even when chart widths or ranges differ. Tariff tooltips show the actual containing interval, without interpolating prices. Outside the chart's range or in a missing interval the shared cursor is hidden. |
 | `show_average_line` | No | `false` | Shows a separately labelled average for each visible graph series. |
 | `show_period_average` | No | `false` | Adds the average price of each favorable period to the table in ct/kWh, for both tariffs. |
 | `show_period_day` | No | `true` | Show the compact day column in the period table. |
@@ -279,7 +281,11 @@ Thresholds must be ordered as:
 cheap_price < normal_price < expensive_price
 ```
 
-The visual editor groups configuration under **General**, **Import**, and **Export**. Price thresholds and the expandable **Price colors** (`Prijskleuren`) subgroup are in **General**. Independent period colors are in each tariff's **Favorable periods** subgroup. All settings are stored as flat YAML keys, so existing configurations remain compatible.
+The visual editor uses **Graph**, **Price thresholds and colors**, **Import**, **Export**, **Grid-import energy**, and **Table columns**. Each tariff owns one source selector and separate **Line**, **Fill**, and **Favorable periods** sections. Grid-import controls appear only when enabled; minimum block duration appears only for that selection method. The synchronization group appears only while hover synchronization is enabled.
+
+Each series has an independent `import_line_interpolation`, `export_line_interpolation`, or `consumption_line_interpolation` (`smooth`, `linear`, `step`). The legacy shared `line_interpolation` YAML remains valid; the editor materializes its effective value separately for every series. Opening the editor does not save anything.
+
+For each tariff, `import_color_mode` / `export_color_mode` selects `price` (threshold colors) or `fixed` (the line RGB color; blank uses the primary theme color). Legacy configurations without a mode keep their previous color priority. For all three series, `<series>_fill_mode` selects `line` (including price gradients) or `own` (independent RGB or the existing default theme color). `<series>_fill_opacity` is 0–1; legacy effective defaults are 0.22 for faded tariff fills, 0.18 for faded energy fills, and 0.14 without fading. Fade remains independently switchable. Mode changes retain dormant color settings. All options remain flat YAML keys, and legacy cards retain their effective appearance.
 
 ### Colors and overrides
 

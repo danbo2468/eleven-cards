@@ -1,0 +1,2 @@
+import {readFile,mkdir,writeFile} from 'node:fs/promises';
+const root=new URL('../',import.meta.url);let code='';for(const name of ['timeline-utils.js','timeline-card.js'])code+=(await readFile(new URL('src/'+name,root),'utf8')).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\n';await mkdir(new URL('dist/',root),{recursive:true});await writeFile(new URL('dist/eleven-timeline-card.js',root),'(()=>{\n'+code+'\n})();\n');

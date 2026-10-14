@@ -77,7 +77,7 @@ test('optional average column is off by default and localizes import and correct
   card.setConfig({ entity: 'sensor.prices', show_period_average: false });
   assert.doesNotMatch(render(), /period-average/);
   const form = Card.getConfigForm();
-  const option = form.schema[0].schema.find(field => field.name === 'show_period_average');
+  const option = form.schema.find(s=>s.name==='table_settings').schema.find(field => field.name === 'show_period_average');
   assert.equal(option.default, false);
   assert.ok(option.selector.boolean);
   assert.equal(form.computeLabel.call({ hass: { language: 'en' } }, option), 'Average price in table');

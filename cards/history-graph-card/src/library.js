@@ -1,5 +1,5 @@
 // Shared browser API for Eleven Cards; only connected cards are retained.
-export const ELEVEN_VERSION='0.2.4-local';
+export const ELEVEN_VERSION='0.3.1-local';
 const elevenLibrary=window.elevenCards??={};
 const elevenPreviews=elevenLibrary._elfPreviews??=new Set();
 elevenLibrary.debug??={};

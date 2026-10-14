@@ -90,9 +90,9 @@ test('consumption is optional, thin and muted with independent native flat local
  assert.equal(c._config.show_consumption_fill,false);
  assert.equal(c._seriesAppearance('consumption').width,1.5);
  assert.equal(c._seriesAppearance('consumption').stroke,'var(--secondary-text-color)');
- const form=Card.getConfigForm(); const group=form.schema.find(s=>s.name==='consumption_settings');
+ const form=Card.getConfigForm({show_consumption:true,show_consumption_fill:true,consumption_fill_mode:'own'}); const group=form.schema.find(s=>s.name==='consumption_settings');
  assert.ok(group);assert.equal(group.flatten,true);
- const fields=new Map(group.schema.map(s=>[s.name,s]));
+ const flat=s=>s.flatMap(f=>f.schema?flat(f.schema):[f]);const fields=new Map(flat(group.schema).map(s=>[s.name,s]));
  for(const name of ['show_consumption','consumption_entity','consumption_line_style','consumption_line_width','consumption_line_color','show_consumption_fill','consumption_fill_color','consumption_fill_fade']){
   const s=fields.get(name);assert.ok(s,name);
   assert.notEqual(form.computeLabel.call({hass:{language:'nl'}},s),name);
