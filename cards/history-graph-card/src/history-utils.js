@@ -105,6 +105,9 @@ export function validateConfig(config) {
   else if(!Number.isFinite(result[key]))throw new Error(key);
  }
  if(result.y_min!==undefined&&result.y_max!==undefined&&result.y_min>=result.y_max)throw new Error('y_range');
+ if(result.y_step==null||result.y_step==='')delete result.y_step;
+ else if(!Number.isFinite(result.y_step)||result.y_step<=0)throw new Error('y_step');
+ if(result.y_step!==undefined&&result.y_min!==undefined&&result.y_max!==undefined)yAxis([],result);
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
@@ -206,6 +209,24 @@ export function yRange(series,config={}) {
   else min=max-Math.max(1,Math.abs(max)*0.05);
  }
  return [min,max];
+}
+// Preserve yRange's padding contract; only the displayed axis uses nice steps.
+export function yAxis(series,config={}){
+ if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
+ let [min,max]=yRange(series,config);
+ const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
+ const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
+ const clean=value=>Number(value.toPrecision(15));
+ // Snap only floating-point noise at integral step indices (e.g. 0.3 / 0.1).
+ const index=value=>{const n=value/step,nearest=Math.round(n);return Math.abs(n-nearest)<=Number.EPSILON*Math.max(1,Math.abs(n))*4?nearest:n;};
+ if(!Number.isFinite(config.y_min))min=clean(Math.floor(index(min))*step);
+ if(!Number.isFinite(config.y_max))max=clean(Math.ceil(index(max))*step);
+ const first=Math.ceil(index(min)),last=Math.floor(index(max));
+ const count=Math.max(0,last-first+1);
+ if(!Number.isFinite(count)||count>200||!Number.isFinite(min)||!Number.isFinite(max)||!Number.isFinite(max-min)||!(max>min))throw new Error('y_step_count');
+ const ticks=Array.from({length:count},(_,i)=>clean((first+i)*step));
+ if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
+ return {min,max,step,ticks};
 }
 const zoneFormats=new Map();
 function localParts(t,zone){

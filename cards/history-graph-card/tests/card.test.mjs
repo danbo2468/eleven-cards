@@ -8,7 +8,7 @@ const state={state:'21',attributes:{unit_of_measurement:'°C',friendly_name:'Roo
 const response=id=>[[{entity_id:id,state:'21',last_changed:new Date(Date.now()-1000).toISOString()}]];
 test('native form localizes callback context, preserves custom title, registers Sections layout',async()=>{
  const {HistoryGraphCard:C}=await load();const form=C.getConfigForm();
- assert.deepEqual(form.schema.map(s=>s.name),['title','hours_to_show','graph_settings','data_processing']);
+ assert.deepEqual(form.schema.map(s=>s.name),['title','hours_to_show','graph_settings','y_axis','data_processing']);
  assert.equal(C.getSeriesConfigForm().schema[0].selector.entity.domain,'sensor');
  assert.equal(form.computeLabel.call({hass:{language:'nl'}},{name:'entities'}),'Sensoren');
  const card=new C();card.setConfig({entities:['sensor.a'],title:'Mijn expliciete titel'});

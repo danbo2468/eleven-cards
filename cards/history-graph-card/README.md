@@ -74,13 +74,30 @@ Omit either bound to let that side scale automatically. Set `title: ""` to hide 
 | `aggregation_method` | No | `avg` | `min`, `max`, or recorder-held time-weighted `avg` over valid data within each period. |
 | `y_min` | No | Automatic | Exact shared Y-axis minimum in the sensor unit; blank/null restores automatic scaling. |
 | `y_max` | No | Automatic | Exact shared Y-axis maximum in the sensor unit; must exceed `y_min` when both are set. |
+| `y_step` | No | Automatic | Positive finite tick interval in the sensor unit. Blank/null restores round automatic steps. At most 200 ticks; excessive density is rejected, never silently changed. |
 | `show_legend` | No | `true` | Show sensor names, line keys and latest values. Hiding it preserves the unit, tooltip and all series. |
 | `show_hover_line` | No | `true` | Vertical hover guide; disabling keeps tooltip and markers. |
 | `sync_hover` | No | `true` | Shares hover, touch and keyboard selection with other Eleven energy/history graphs on the same page. Disable for independent interaction. |
 | `hover_sync_group` | No | Empty | Only cards with the same group synchronize; empty uses the default group. Guides follow the exact timestamp, not the same pixel position. Outside a receiving chart's time range, its tooltip and guide are hidden. |
 ### Settings ownership
 
-The editor separates Graph (title, time range, Y bounds, legend and hover), shared Data processing, and Sensors. Open one sensor entry to select its entity once and adjust its name, line and fill. There are no duplicate global appearance controls. Each of two sensors has exactly the same independent controls as a single sensor.
+The editor separates Graph (legend and hover), a dedicated **Y-axis / Y-as** expansion (optional minimum, maximum and step), shared Data processing, and Sensors; title and time range remain directly visible above these groups. Open one sensor entry to select its entity once and adjust its name, line and fill. There are no duplicate global appearance controls. Each of two sensors has exactly the same independent controls as a single sensor.
+
+### Y-axis
+
+Leave the three Y-axis fields empty for automatic scaling. The card pads the data, selects a round step of **1, 2 or 5 × a power of ten** (for example 0.2, 0.5, 1, 2, 5, 10), then rounds only the automatic bounds outward. Negative and decimal sensor ranges are supported. Setting either bound keeps that endpoint exact; setting both requires `y_min < y_max`.
+
+Set `y_step` for a manual positive tick interval. Ticks are multiples of that step anchored at zero and positioned at their actual values, not distributed evenly between unaligned endpoints. For example, bounds 11–23 with step 5 show ticks at 15 and 20, while the bounds remain 11 and 23. A step wider than a fixed range may leave no tick within it. All three keys remain flat YAML fields; clearing a field (blank/null) restores its automatic behavior independently.
+
+```yaml
+y_min: 11
+y_max: 23
+y_step: 5
+```
+
+The card never substitutes another value for a manual step. More than **200 ticks**, overflowing ranges or indistinguishable tick values produce an actionable Y-axis error: increase the step or narrow the bounds. With automatic bounds, this check runs after history loads because the data determines the range. Small axis values retain decimal precision instead of rounding to zero; very small values use scientific notation.
+
+### Sensor settings
 
 Each `series_options` record supports:
 
@@ -175,7 +192,7 @@ REST returns a list of per-entity lists. First row identifies the entity; minima
 
 Lines use recorder-held state (step geometry). Query-start initial state is deliberately included as context, not labelled a new measurement. A state remains valid until the next recorder state; an absent update alone is not proof of a gap. Non-numeric/unavailable/unknown rows interrupt the line until a numeric state resumes; times before the first state stay unknown. Tooltips report held values at the selected time, not interpolated readings.
 
-Recorder/history must be enabled and include the sensors. Purged history cannot be recovered; partial missing data is labelled. Aggregation uses calendar boundaries in the Home Assistant time zone, Monday-based weeks and calendar months. Missing intervals remain gaps; averages use valid recorder-held durations, not sample counts. Zoom buttons and desktop drag selection change only the visible time range, never the configured aggregation. Long-term statistics, rate conversion and estimated gap filling are not implemented. Because `no_attributes` is used, historical unit changes cannot be detected: choose sensors whose units remain stable. Values are displayed with at most two decimal places; the plot retains numeric precision.
+Recorder/history must be enabled and include the sensors. Purged history cannot be recovered; partial missing data is labelled. Aggregation uses calendar boundaries in the Home Assistant time zone, Monday-based weeks and calendar months. Missing intervals remain gaps; averages use valid recorder-held durations, not sample counts. Zoom buttons and desktop drag selection change only the visible time range, never the configured aggregation. Long-term statistics, rate conversion and estimated gap filling are not implemented. Because `no_attributes` is used, historical unit changes cannot be detected: choose sensors whose units remain stable. Values normally display at most two decimal places; small nonzero values retain significant digits (scientific notation for very small values), and axis labels retain tick precision. The plot retains numeric precision.
 
 Requests are at most one per card per minute after completion (except explicit config changes/retry), not per `hass` update. A 15-second timeout bounds waiting; older results are ignored on configuration changes or disconnection. The underlying `callApi` request cannot be physically aborted by this API; timed-out results never overwrite newer data. Loading, empty, unit mismatch and network errors have explicit states. No runtime CDN or dependencies.
 
