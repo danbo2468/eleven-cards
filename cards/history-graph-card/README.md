@@ -2,7 +2,7 @@
 
 [← Eleven Cards](../../README.md)
 
-A compact Home Assistant card for comparing historical numeric sensors that share one unit.
+A compact Home Assistant card for comparing historical numeric sensors, with an independent y-axis for each unit.
 
 Part of the Eleven Cards collection. Both cards are bundled for HACS; installation remains unavailable while this repository is private. See [HACS installation](../../README.md#hacs-installation) and the [migration guide](../../README.md#migrating-existing-dashboards) before replacing an existing card.
 
@@ -19,7 +19,7 @@ title: Temperature
 hours_to_show: 24
 ```
 
-Replace both example entity IDs with your own recorded numeric sensors. Their units must match exactly, such as two temperature sensors in °C.
+Replace both example entity IDs with your own recorded numeric sensors. Sensors with the same unit share a scale; each different unit automatically gets an additional independent y-axis.
 
 ## Installation
 
@@ -36,9 +36,10 @@ If you create the `www` directory for the first time, restart Home Assistant so 
 
 ## Features
 
-- Shared y axis for 1–8 sensors with exactly the same unit.
+- 1–8 sensors, sharing one y-axis per exact unit. Different units get independent additional axes.
 - Compact native `ha-card`, wrapping legend and distinct solid/dashed series.
 - Mouse hover, click/touch-pinned details; keyboard arrows, Home/End and Escape.
+- Click or tap sensor labels to toggle lines and fills. Choose each sensor's initial visibility in the editor.
 - Automatic Dutch/English text and number/date formatting, light/dark theme inheritance.
 - Native Home Assistant form/selectors and Sections resizing. Each sensor is added once, with its name, complete line styling and fill in the same expandable entry; existing YAML remains compatible.
 - Recorder unavailable/unknown intervals remain real gaps.
@@ -69,12 +70,12 @@ Omit either bound to let that side scale automatically. Set `title: ""` to hide 
 | `title` | No | Localized History / Historie | Explicit text is preserved; empty string hides the title. |
 | `hours_to_show` | No | `24` | Numeric range 1–8760 hours; only retained recorder history is available. |
 | `series_options` | No | Concrete appearance per sensor | Per-sensor identity, line and fill settings, described below. RGB triplet or six-digit hex colors are accepted. |
-| `graph_mode` | No | `lines` | Separate `lines` or cumulative `stacked` lines; positive and negative values stack separately. |
+| `graph_mode` | No | `lines` | Separate `lines` or cumulative `stacked` lines; only identical units stack together, with positive and negative values separate. |
 | `aggregation_period` | No | `none` | `none`, `minute`, `quarter_hour`, `hour`, `day`, `week`, or `month`; applies to every sensor separately. |
 | `aggregation_method` | No | `avg` | `min`, `max`, or recorder-held time-weighted `avg` over valid data within each period. |
-| `y_min` | No | Automatic | Exact shared Y-axis minimum in the sensor unit; blank/null restores automatic scaling. |
-| `y_max` | No | Automatic | Exact shared Y-axis maximum in the sensor unit; must exceed `y_min` when both are set. |
-| `y_step` | No | Automatic | Positive finite tick interval in the sensor unit. Blank/null restores round automatic steps. At most 200 ticks; excessive density is rejected, never silently changed. |
+| `y_min` | No | Automatic | Exact Y-axis minimum for the first sensor's unit; blank/null restores automatic scaling. Additional units scale automatically. |
+| `y_max` | No | Automatic | Exact Y-axis maximum for the first sensor's unit; must exceed `y_min` when both are set. |
+| `y_step` | No | Automatic | Positive finite tick interval for the first sensor's unit. Blank/null restores round automatic steps. At most 200 ticks; excessive density is rejected, never silently changed. |
 | `show_legend` | No | `true` | Show sensor names, line keys and latest values. Hiding it preserves the unit, tooltip and all series. |
 | `show_hover_line` | No | `true` | Vertical hover guide; disabling keeps tooltip and markers. |
 | `sync_hover` | No | `true` | Shares hover, touch and keyboard selection with other Eleven energy/history graphs on the same page. Disable for independent interaction. |
@@ -84,6 +85,8 @@ Omit either bound to let that side scale automatically. Set `title: ""` to hide 
 The editor separates Graph (legend and hover), a dedicated **Y-axis / Y-as** expansion (optional minimum, maximum and step), shared Data processing, and Sensors; title and time range remain directly visible above these groups. Open one sensor entry to select its entity once and adjust its name, line and fill. There are no duplicate global appearance controls. Each of two sensors has exactly the same independent controls as a single sensor.
 
 ### Y-axis
+
+The first sensor's unit is shown on the left. Each additional distinct unit gets its own automatically scaled axis on the right; sensors with exactly the same unit share that scale. The legend and tooltip show each value in its own unit. Lines, fills, gradients and hover markers all use the corresponding axis. In stacked mode, only sensors within the same unit group are summed; incompatible quantities are never added together. Manual `y_min`, `y_max` and `y_step` apply only to the first sensor's unit, preserving the existing single-unit configuration.
 
 Leave the three Y-axis fields empty for automatic scaling. The card pads the data, selects a round step of **1, 2 or 5 × a power of ten** (for example 0.2, 0.5, 1, 2, 5, 10), then rounds only the automatic bounds outward. Negative and decimal sensor ranges are supported. Setting either bound keeps that endpoint exact; setting both requires `y_min < y_max`.
 
@@ -97,6 +100,20 @@ y_step: 5
 
 The card never substitutes another value for a manual step. More than **200 ticks**, overflowing ranges or indistinguishable tick values produce an actionable Y-axis error: increase the step or narrow the bounds. With automatic bounds, this check runs after history loads because the data determines the range. Small axis values retain decimal precision instead of rounding to zero; very small values use scientific notation.
 
+### Sensor visibility
+
+Each sensor has **Show by default / Standaard tonen**, enabled for existing and new sensors. Disable it to start that sensor hidden. With `show_legend: true`, click/tap its label or focus its button and press Space/Enter to toggle it. Hidden labels are dimmed and struck through, but remain available to turn the sensor back on. Turning every sensor off shows a recoverable empty chart.
+
+Toggles are temporary, local to this card instance: they survive data refresh, zoom, language updates and unchanged configuration feedback, but a new instance/page reload uses the configured defaults. Changing a sensor's configured default applies it immediately. Toggling never saves a dashboard or changes the sensor. Hidden sensors are excluded from paths, fills, gradients, tooltips, hover markers, axis scaling and stacked sums; their Recorder data remains cached. Manual bounds stay attached to the original first sensor's unit, even if that sensor is hidden. Keep the legend enabled if you want interactive toggles; a hidden legend provides no toggle buttons.
+
+```yaml
+series_options:
+  - entity: sensor.living_room_temperature
+    visible: true
+  - entity: sensor.bedroom_temperature
+    visible: false
+```
+
 ### Sensor settings
 
 Each `series_options` record supports:
@@ -105,6 +122,7 @@ Each `series_options` record supports:
 | --- | --- | --- |
 | `entity` | Required | A sensor listed in `entities`. |
 | `name` | Sensor friendly name | Optional display name. |
+| `visible` | `true` | Show this sensor initially. Set `false` to start hidden; its legend button remains available to enable it. |
 | `line_style_source` | Own appearance | Optional entity ID of another sensor on this card. Follow its width, dash style and interpolation live; color, gradient and fill remain independent. Missing sources, self-links and cycles are rejected. |
 | `line_width` | `3.5` | 1–8 pixels, independently per sensor unless explicitly following another sensor. |
 | `line_style` | Alternating solid/dashed | `solid`, `dashed` or `dotted`. |

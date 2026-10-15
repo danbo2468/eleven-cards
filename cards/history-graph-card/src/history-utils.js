@@ -9,7 +9,7 @@ export function seriesAppearance(config,index,seen=new Set()) {
  const option=config.series_options?.find(s=>s.entity===config.entities[index])??{};
  const inherited=option.gradient_stops??(option.color?[]:config.gradient_stops??[]);
  const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
- const row={entity:config.entities[index],...(option.name?{name:option.name}:{}),
+ const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
   line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
   line_interpolation:option.line_interpolation??config.line_interpolation??'step',
   color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
@@ -62,7 +62,7 @@ export function updateSeriesRow(data,index,value){
   delete rows[index].line_style_source;
   for(const key of LINE_GEOMETRY_KEYS)rows[index][key]=old[key];
  }
- if(old.entity!==rows[index].entity)for(const row of rows){
+ if(old.entity&&old.entity!==rows[index].entity)for(const row of rows){
   if(row.line_style_source===old.entity){
    if(rows[index].entity)row.line_style_source=rows[index].entity;
    else delete row.line_style_source;
@@ -129,7 +129,7 @@ export function validateConfig(config) {
   if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
   if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
   for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
-  for(const key of ['show_fill','fill_fade'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
   if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
   if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
   if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
@@ -193,8 +193,24 @@ export function seriesMetadata(hass,entities,options=[]) {
   const option=options.find(s=>s.entity===id);
   return {id,name:option?.name||state.attributes?.friendly_name||id,unit:state.attributes?.unit_of_measurement??''};
  });
- if(items.some(item=>item.unit!==items[0].unit)) throw new Error('unit');
- return {items,unit:items[0].unit};
+ return {items,unit:items[0]?.unit??''};
+}
+// Group by exact unit, never add or scale incompatible quantities together.
+export function graphAxes(series,meta,config,start,end,visible=series.map(()=>true)){
+ const units=[...new Set(meta.items.filter((_,i)=>visible[i]).map(item=>item.unit))];
+ if(!units.length)units.push(meta.items[0]?.unit??'');
+ const seriesAxes=meta.items.map(item=>units.indexOf(item.unit));
+ const plotSeries=config.graph_mode==='stacked'?series.slice():series;
+ const axes=units.map((unit,index)=>{
+  const indices=seriesAxes.flatMap((axis,i)=>axis===index&&visible[i]?[i]:[]);
+  let group=indices.map(i=>series[i]);
+  if(config.graph_mode==='stacked'){
+   group=stackSeries(group,start,end);
+   indices.forEach((i,j)=>{plotSeries[i]=group[j];});
+  }
+  return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
+ });
+ return {axes,seriesAxes,plotSeries};
 }
 export function yRange(series,config={}) {
  let min=Infinity,max=-Infinity;
