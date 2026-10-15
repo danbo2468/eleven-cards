@@ -477,6 +477,8 @@ function selectDurationByPrice(points, totalMinutes, direction, options = {}) {
 
 // Dutch source strings are translation keys; no user-provided text is translated.
 const ENGLISH = Object.freeze({
+  "De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Goedkoopste uren per dag in op meer dan 0.":"The table is not shown because 0 hours are selected. Set Cheapest hours per day to a value greater than 0.",
+  "De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Beste terugleveruren per dag in op meer dan 0.":"The table is not shown because 0 hours are selected. Set Best export hours per day to a value greater than 0.",
   "Prijsgrenzen en prijskleuren":"Price thresholds and colors",
   "Tabelkolommen":"Table columns",
   "Lijn":"Line",
@@ -805,12 +807,26 @@ class EnergySettingsEditor extends HTMLElement {
       this.shadowRoot.innerHTML='<style>:host{display:block;min-width:0}ha-form{display:block;min-width:0}</style><ha-form></ha-form>';
       this._form=this.shadowRoot.querySelector('ha-form');
       this._form.addEventListener('value-changed',e=>{
-        e.stopPropagation();this._data=DynamicEnergyPriceCard.editorConfig({...this._data,...e.detail.value});this._render();
+        e.stopPropagation();this._data=DynamicEnergyPriceCard.editorConfig({...this._data,...DynamicEnergyPriceCard.editorStoredConfig(e.detail.value)});this._render();
         this.dispatchEvent(new CustomEvent('config-changed',{detail:{config:DynamicEnergyPriceCard.editorConfig(this._data)},bubbles:true,composed:true}));
       });
     }
-    const f=DynamicEnergyPriceCard.getConfigForm(this._data);this._form.hass=this._hass;this._form.data=this._data;this._form.schema=f.schema;
-    this._form.computeLabel=s=>f.computeLabel.call(this,s);this._form.computeHelper=s=>f.computeHelper.call(this,s);
+    const f=DynamicEnergyPriceCard.getConfigForm(this._data);this._form.hass=this._hass;this._form.data=DynamicEnergyPriceCard.editorDisplayConfig(this._data);this._form.schema=f.schema;
+    this._form.computeLabel=s=>f.computeLabel.call(this,s);this._form.computeHelper=s=>this._computeHelper(f,s);
+  }
+  _computeHelper(form,schema){
+    const text=form.computeHelper.call(this,schema);
+    const hours={show_cheapest_table:'cheapest_hours',show_export_table:'export_best_hours'}[schema?.name];
+    if(!hours||!this._data[schema.name]||isCheapestHoursEnabled(this._data[hours]))return text;
+    // Native ha-selector renders helper content with Lit, including safe DOM nodes.
+    // Scope emphasis to this warning; other helpers and switch labels stay unchanged.
+    const warning=document.createElement('span');
+    warning.className='period-table-warning';
+    warning.style.color='var(--warning-color, #ff9800)';
+    warning.style.fontWeight='600';
+    warning.setAttribute('role','status');
+    warning.textContent=text;
+    return warning;
   }
 }
 class DynamicEnergyPriceCard extends HTMLElement {
@@ -834,6 +850,19 @@ class DynamicEnergyPriceCard extends HTMLElement {
       data[`${p}_fill_opacity`] ??= data[`${p}_fill_fade`]!==false ? p==='consumption' ? .18 : .22 : .14;
     }
     delete data.line_interpolation;
+    return data;
+  }
+  // Only the visual form uses cents. Public YAML and renderer stay in euros/kWh.
+  static editorDisplayConfig(config) {
+    const data=this.editorConfig(config);
+    for(const key of ['cheap_price','normal_price','expensive_price','export_price_offset'])
+      if(Number.isFinite(data[key]))data[key]=Number((data[key]*100).toPrecision(15));
+    return data;
+  }
+  static editorStoredConfig(config) {
+    const data={...config};
+    for(const key of ['cheap_price','normal_price','expensive_price','export_price_offset'])
+      if(Number.isFinite(data[key]))data[key]=Number((data[key]/100).toPrecision(15));
     return data;
   }
   static async getConfigElement() {
@@ -869,7 +898,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
       field(p+'_favorable_color'),field(p==='import'?'show_cheapest_table':'show_export_table')
     ]);
     const schema=[
-      group('graph_settings','Grafiek',['title','show_title','graph_mode','current_price_mode','tomorrow_after','show_average_line','show_price_levels','show_hover_line','sync_hover',...(data.sync_hover?['hover_sync_group']:[])].map(field)),
+      group('graph_settings','Algemeen',['title','show_title','graph_mode','current_price_mode','tomorrow_after','show_average_line','show_price_levels','show_hover_line','sync_hover',...(data.sync_hover?['hover_sync_group']:[])].map(field)),
       group('price_settings','Prijsgrenzen en prijskleuren',[
         ...['cheap_price','normal_price','expensive_price'].map(field),
         group('price_color_settings','Prijskleuren',['cheap_color','normal_color','expensive_color','zero_color','negative_color'].map(field))
@@ -879,10 +908,14 @@ class DynamicEnergyPriceCard extends HTMLElement {
       group('consumption_settings','Netafname energie',[field('show_consumption'),...(data.show_consumption?[field('consumption_entity'),line('consumption'),fill('consumption')]:[])]),
       group('table_settings','Tabelkolommen',['day','type','start','end','duration','average'].map(c=>field('show_period_'+c)))
     ];
-    const newLabels={graph_settings:'Grafiek',price_settings:'Prijsgrenzen en prijskleuren',table_settings:'Tabelkolommen'};
+    const newLabels={graph_settings:'Algemeen',price_settings:'Prijsgrenzen en prijskleuren',table_settings:'Tabelkolommen'};
     const suffix={line_interpolation:'Lijnverloop',color_mode:'Lijnkleur',fill_mode:'Vulkleurmodus',fill_opacity:'Dekking',line_settings:'Lijn',fill_settings:'Vulling'};
     return {schema,computeLabel:function(s){const key=s?.name??'',label=newLabels[key]??suffix[key.replace(/^(import|export|consumption)_/,'')];return label?translate(label,resolveLanguage(this?.hass??frontendHass())):base.computeLabel.call(this,s);},computeHelper:function(s){
       const key=s?.name??'',lang=resolveLanguage(this?.hass??frontendHass());
+      if(key==='show_cheapest_table' && data.show_cheapest_table && !isCheapestHoursEnabled(data.cheapest_hours))
+        return translate('De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Goedkoopste uren per dag in op meer dan 0.',lang);
+      if(key==='show_export_table' && data.show_export_table && !isCheapestHoursEnabled(data.export_best_hours))
+        return translate('De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Beste terugleveruren per dag in op meer dan 0.',lang);
       if(key==='price_settings')return translate('Dezelfde grenzen gelden voor beide tarieven; lage afnameprijzen en hoge terugleverprijzen zijn gunstig.',lang);
       if(['import_line_color','export_line_color'].includes(key))return translate('Optioneel. Leeg gebruikt de primaire Home Assistant-kleur.',lang);
       if(key.endsWith('_fill_color'))return translate('Leeg behoudt de bestaande themakleur. Volg lijn volgt ook de prijskleuren.',lang);
@@ -964,7 +997,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
       number: { min: 0, max: 24, step: 1, mode: 'slider', get unit_of_measurement() { return unit === 'uur' ? editorText('uur') : unit; } },
     });
     const thresholdSelector = {
-      number: { min: -1, max: 1, step: 0.01, mode: 'slider', unit_of_measurement: '€/kWh' },
+      number: { min: -100, max: 100, step: 1, mode: 'slider', unit_of_measurement: 'ct/kWh' },
     };
     const lineStyleSelector = { select: { mode: 'dropdown', get options() { return lineStyleOptions(); } } };
     const lineWidthSelector = {
@@ -1003,9 +1036,9 @@ class DynamicEnergyPriceCard extends HTMLElement {
             ...['day', 'type', 'start', 'end', 'duration'].map(column => ({ name: `show_period_${column}`, default: DEFAULT_CONFIG[`show_period_${column}`], selector: { boolean: {} } })),
             { name: 'show_price_levels', default: DEFAULT_CONFIG.show_price_levels, selector: { boolean: {} } },
             { name: 'tomorrow_after', default: DEFAULT_CONFIG.tomorrow_after, required: true, selector: numberSelector('uur') },
-            { name: 'cheap_price', default: DEFAULT_CONFIG.cheap_price, required: true, selector: thresholdSelector },
-            { name: 'normal_price', default: DEFAULT_CONFIG.normal_price, required: true, selector: thresholdSelector },
-            { name: 'expensive_price', default: DEFAULT_CONFIG.expensive_price, required: true, selector: thresholdSelector },
+            { name: 'cheap_price', default: DEFAULT_CONFIG.cheap_price * 100, required: true, selector: thresholdSelector },
+            { name: 'normal_price', default: DEFAULT_CONFIG.normal_price * 100, required: true, selector: thresholdSelector },
+            { name: 'expensive_price', default: DEFAULT_CONFIG.expensive_price * 100, required: true, selector: thresholdSelector },
             {
               type: 'expandable', name: 'price_color_settings', get title() { return editorText("Prijskleuren"); }, flatten: true,
               schema: [
@@ -1061,7 +1094,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
             { name: 'export_entity', selector: { entity: { domain: 'sensor' } } },
             {
               name: 'export_price_offset', default: DEFAULT_CONFIG.export_price_offset,
-              selector: { number: { min: -1, max: 1, step: 0.001, mode: 'box', unit_of_measurement: '€/kWh' } },
+              selector: { number: { min: -100, max: 100, step: 0.1, mode: 'box', unit_of_measurement: 'ct/kWh' } },
             },
             {
               type: 'expandable', name: 'export_favorable_settings', get title() { return editorText("Gunstige perioden"); }, flatten: true,

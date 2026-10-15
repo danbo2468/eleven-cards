@@ -1,0 +1,92 @@
+import {SharedGraph} from '../../../shared/graph.js';
+const escapeTimeline=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+export const TimelineView={
+ _setPeriod(hours){if(!Number.isFinite(hours)||hours<1||hours>8760)return;this._periodHours=hours;return this._reloadPeriod();},
+ _navigate(direction){const now=Date.now();this._periodEnd=direction===0?null:Math.min(now,(this._periodEnd??this._end??now)+direction*(this._periodHours??this._config.hours_to_show)*3600000);if(this._periodEnd===now)this._periodEnd=null;return this._reloadPeriod();},
+ _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._render();return this._refresh();},
+ _ticks(){const width=this.shadowRoot.host?.clientWidth??600,count=width<400?3:5;return Array.from({length:count},(_,i)=>i/(count-1));},
+ _segmentAppearance(s,id){return s.missing?{label:this._nl()?'Geen geschiedenis':'No history',color:'transparent'}:this._appearance(s.state,id);},
+ _summary(index){const totals=new Map();for(const s of this._series[index]??[]){const ms=Math.max(0,Math.min(s.end,this._viewEnd)-Math.max(s.start,this._viewStart)),label=this._segmentAppearance(s,this._config.entities[index]).label;if(ms)totals.set(label,(totals.get(label)??0)+ms);}return [...totals].map(([label,ms])=>`${label}: ${this._duration(ms)}`).join(' · ');},
+ _stateLimitMessage(){return this._nl()?'Maximaal 20 verschillende statussen per entiteit. Deze entiteit heeft er meer in de gekozen periode.':'Maximum 20 distinct states per entity. This entity has more in the selected period.';},
+ _name(id){return this._config.series_options.find(x=>x.entity===id)?.name??this._hass?.states?.[id]?.attributes?.friendly_name??id;},
+ _duration(ms){const minutes=Math.floor(ms/60000);return minutes<1?'<1 min':minutes<60?`${minutes} min`:`${Math.floor(minutes/60)}${this._nl()?'u':'h'} ${minutes%60} min`;},
+ _zoom(factor){
+  this._hideTooltip();if(!factor)this._viewport=null;
+  else{const a=this._viewport?.[0]??this._start,b=this._viewport?.[1]??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2,start=Math.max(this._start,Math.min(this._end-width,center-width/2));this._viewport=[start,start+width];}
+  this._render();
+ },
+ _receiveHover(t){if(t===null||!Number.isFinite(t)||t<this._viewStart||t>this._viewEnd){this._hideTooltip(false);return;}this._showTooltip(t,false);},
+ _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._pointerFocusPending=null;this._cursor=null;this._pinned=false;for(const cls of ['tooltip','guide']){const el=this.shadowRoot.querySelector('.'+cls);if(el)el.hidden=true;}},
+ _showTooltip(t,publish=true){
+  const chart=this.shadowRoot.querySelector('.chart'),tooltip=chart?.querySelector('.tooltip'),guide=chart?.querySelector('.guide');if(!tooltip)return;
+  this._cursor=t;const nl=this._nl(),a=this._viewStart,b=this._viewEnd,esc=escapeTimeline;
+  tooltip.innerHTML=`<strong>${esc(this._time(t))}</strong>`+this._config.entities.map((id,i)=>{if(this._stateLimits?.[i])return '';const s=(this._series[i]??[]).find(s=>s.start<=t&&(t<s.end||(t===b&&s.end===b)));if(!s)return `<span>${esc(this._name(id))}: ${nl?'Geen geschiedenis':'No history'}</span>`;const v=this._segmentAppearance(s,id);return `<span><i style="background:${v.color}"></i><b>${esc(this._name(id))}: ${esc(v.label)}</b><small>${esc(this._time(s.start))} – ${esc(this._time(s.end))} · ${esc(this._duration(s.end-s.start))}</small></span>`;}).join('');
+  tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';const box=chart.getBoundingClientRect(),px=(t-a)/(b-a)*box.width;
+  if(guide){guide.hidden=false;guide.style.left=`${px}px`;}
+  tooltip.style.maxHeight=`${Math.min(360,(window.innerHeight??480)-16)}px`;
+  const measured=tooltip.getBoundingClientRect();let left=px+14;if(left+measured.width>box.width-4)left=px-measured.width-14;tooltip.style.left=`${Math.max(4,Math.min(box.width-measured.width-4,left))}px`;tooltip.style.top=`${Math.max(8-box.top,Math.min(0,(window.innerHeight??480)-box.top-measured.height-8))}px`;
+  if(publish)SharedGraph.publishHover(this,t);
+ },
+ _bindInteractions(){
+  const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
+  const timestamp=e=>{const r=chart.getBoundingClientRect();return this._viewStart+Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*(this._viewEnd-this._viewStart);};
+  let drag=null;const selection=chart.querySelector('.zoom-selection');
+  chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){this._hideTooltip();const r=chart.getBoundingClientRect(),x=Math.max(r.left,Math.min(r.right,e.clientX));selection.hidden=false;selection.style.left=`${(Math.min(drag.x,x)-r.left)/r.width*100}%`;selection.style.width=`${Math.abs(x-drag.x)/r.width*100}%`;}else if(!this._pinned&&e.pointerType!=='touch')this._showTooltip(timestamp(e));};
+  chart.onpointerdown=e=>{if(e.target?.closest?.('.tooltip')||(e.button??0)!==0)return;this._pointerFocusPending=e.target?.closest?.('.segment')??null;this._pinned=true;this._showTooltip(timestamp(e));if(e.pointerType==='mouse'){drag={x:e.clientX,t:timestamp(e)};chart.setPointerCapture?.(e.pointerId);}};
+  chart.onpointerup=e=>{selection.hidden=true;if(drag){const d=drag;drag=null;if(Math.abs(e.clientX-d.x)>=6){const t=timestamp(e),a=Math.min(d.t,t),b=Math.max(d.t,t);if(b-a>=60000){this._hideTooltip();this._viewport=[a,b];this._render();}}}};
+  chart.onpointercancel=()=>{drag=null;selection.hidden=true;this._hideTooltip();};chart.onlostpointercapture=()=>{drag=null;selection.hidden=true;};chart.onpointerleave=()=>{if(!this._pinned&&!drag)this._hideTooltip();};
+  chart.onkeydown=e=>{this._pointerFocusPending=null;if(e.key==='Escape'){drag=null;selection.hidden=true;this._hideTooltip();return;}if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const times=[...new Set([this._viewStart,...this._series.flatMap(s=>s.map(v=>v.start)).filter(t=>t>this._viewStart&&t<this._viewEnd),this._viewEnd])].sort((a,b)=>a-b);let i=times.findIndex(t=>t>=(this._cursor??this._viewStart));if(i<0)i=times.length-1;i=e.key==='Home'?0:e.key==='End'?times.length-1:Math.max(0,Math.min(times.length-1,i+(e.key==='ArrowRight'?1:-1)));this._pinned=true;this._showTooltip(times[i]);};
+  chart.onfocusout=e=>{if(!chart.contains(e.relatedTarget))this._hideTooltip();};this.shadowRoot.querySelectorAll('.segment').forEach(button=>{button.onfocus=()=>{const fromPointer=this._pointerFocusPending===button;this._pointerFocusPending=null;if(fromPointer&&this._cursor!=null)return;this._pinned=true;this._showTooltip(Number(button.dataset.time));};});
+ },
+ _render(){
+  if(!this._config)return;const c=this._config,nl=this._nl(),esc=escapeTimeline;this._viewStart=this._viewport?.[0]??this._start;this._viewEnd=this._viewport?.[1]??this._end;const a=this._viewStart,b=this._viewEnd;let body='',controls='';
+  if(this._status!=='ready')body=`<div class="message" role="status">${this._status==='error'?(nl?'Geschiedenis kon niet worden geladen.':'Unable to load history.'):(nl?'Geschiedenis laden…':'Loading history…')}${this._status==='error'?`<button class="retry">${nl?'Opnieuw proberen':'Retry'}</button>`:''}</div>`;
+  else{
+   controls=`<div class="zoom-controls" role="group" aria-label="Zoom">${[['in','+',nl?'Inzoomen':'Zoom in'],['out','−',nl?'Uitzoomen':'Zoom out'],['reset','↺',nl?'Zoom herstellen':'Reset zoom']].map(([action,label,title])=>`<button data-zoom="${action}" title="${title}" aria-label="${title}">${label}</button>`).join('')}</div>`;
+   const legend=new Map(),rows=c.entities.map((id,i)=>{const name=this._name(id);if(this._stateLimits?.[i])return `<div class="row"><div class="row-label">${esc(name)}</div><div class="state-limit" role="status">${esc(this._stateLimitMessage())}</div></div>`;const bars=(this._series[i]??[]).filter(s=>s.end>a&&s.start<b).map(s=>{const v=this._segmentAppearance(s,id);legend.set(v.label+'|'+v.color,v);const start=Math.max(a,s.start),end=Math.min(b,s.end),description=`${name}: ${v.label}, ${this._time(s.start)} – ${this._time(s.end)} · ${this._duration(s.end-s.start)}`;return `<button class="segment ${['unknown','unavailable'].includes(s.state)?'gap':''}" style="left:${(start-a)/(b-a)*100}%;width:${(end-start)/(b-a)*100}%;background-color:${v.color}" aria-label="${esc(description)}" data-time="${start}">${c.show_state_labels?`<span>${esc(v.label)}</span>`:''}</button>`;}).join('');return `<div class="row">${c.show_labels?`<div class="row-label">${esc(name)}</div>`:''}<div class="track">${bars}</div>${c.show_summary?`<div class="summary">${esc(this._summary(i))}</div>`:''}</div>`;}).join('');
+   body=`<div class="chart" tabindex="0" role="group" aria-label="${nl?'Statustijdlijn':'Status timeline'}">${c.show_grid!==false?this._ticks().map(r=>`<div class="grid-line" style="left:${r*100}%"></div>`).join(''):''}${rows}<div class="guide" hidden></div><div class="zoom-selection" hidden></div><div class="tooltip" role="status" hidden></div></div>`;
+   if(c.show_axis)body+=`<div class="axis">${this._ticks().map(r=>`<span>${esc(this._time(a+(b-a)*r))}</span>`).join('')}</div>`;
+   if(c.show_legend)body+=`<div class="legend">${[...legend.values()].map(v=>`<span><i style="background:${v.color}"></i>${esc(v.label)}</span>`).join('')}</div>`;
+  }
+  const hours=this._periodHours??c.hours_to_show,choices=[...new Set([6,24,168,hours])].sort((a,b)=>a-b),navigation=c.show_navigation===false?'':`<div class="period-controls"><button data-period="previous" aria-label="${nl?'Vorige periode':'Previous period'}">‹</button><select aria-label="${nl?'Periode':'Period'}">${choices.map(h=>`<option value="${h}" ${h===hours?'selected':''}>${h===168?(nl?'7 dagen':'7 days'):`${h} ${nl?'uur':'hours'}`}</option>`).join('')}</select><button data-period="next" aria-label="${nl?'Volgende periode':'Next period'}" ${this._periodEnd==null?'disabled':''}>›</button><button data-period="now">${nl?'Nu':'Now'}</button></div>`;
+  this.shadowRoot.innerHTML=`<style>:host{display:block;min-width:0}ha-card{display:block;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b);font-family:inherit;height:100%}
+.content{padding:16px;box-sizing:border-box;position:relative}h2{margin:0 0 18px;padding-right:100px;font-size:18px;font-weight:650;line-height:1.25;letter-spacing:-.01em;overflow-wrap:anywhere}
+.zoom-controls{position:absolute;right:12px;top:10px;display:flex;gap:2px}
+.zoom-controls button{width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);font-size:20px;cursor:pointer}
+.zoom-controls button:hover,.zoom-controls button:focus-visible{background:var(--secondary-background-color,#eee);outline:1px solid var(--divider-color)}
+.period-controls{display:flex;align-items:center;gap:4px;margin:0 0 7px}
+.period-range{font-size:11px;color:var(--secondary-text-color,#666);margin-bottom:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.period-controls button,.period-controls select{font:inherit;font-size:12px;min-height:32px;border:1px solid var(--divider-color,#ddd);border-radius:5px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));padding:4px 10px;cursor:pointer}
+.period-controls select{min-width:0}
+.period-controls button:disabled{opacity:.35;cursor:default}
+.period-controls button:focus-visible,.period-controls select:focus-visible{outline:2px solid var(--primary-color,#2196f3)}
+.chart{position:relative;touch-action:pan-y;min-width:0}
+.grid-line{position:absolute;top:0;bottom:0;border-left:1px solid var(--divider-color,#ddd);opacity:.45;pointer-events:none}
+.row{position:relative}
+.row-label{position:relative;width:fit-content;background:var(--ha-card-background,var(--card-background-color,#fff))}
+.summary{margin-top:6px;font-size:11px;color:var(--secondary-text-color,#666);background:var(--ha-card-background,var(--card-background-color,#fff));position:relative;overflow-wrap:anywhere}
+.row+.row{margin-top:${c.row_gap}px}
+.row-label{font-size:12px;color:var(--secondary-text-color,#666);margin-bottom:7px;overflow-wrap:anywhere}
+.track{position:relative;height:${c.bar_height}px;border-radius:${c.border_radius}px;overflow:hidden;background:var(--divider-color,#ddd)}
+.segment{position:absolute;top:0;height:100%;padding:0;border:0;border-right:1px solid #ffffff24;box-sizing:border-box;cursor:pointer;color:white;min-width:0;overflow:hidden;font:11px inherit}
+.segment span{padding:0 6px;white-space:nowrap}
+.segment:focus-visible{outline:2px solid var(--primary-text-color,#222);outline-offset:-2px;z-index:1}
+.gap{background-image:repeating-linear-gradient(135deg,transparent,transparent 4px,#ffffff40 4px,#ffffff40 8px)}
+.axis{display:flex;justify-content:space-between;gap:8px;margin-top:10px;font-size:11px;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:16px;font-size:12px;color:var(--secondary-text-color,#666)}
+.legend span{display:flex;align-items:center;gap:6px;overflow-wrap:anywhere}
+.legend i,.tooltip i{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+.guide{position:absolute;top:0;bottom:0;border-left:1px solid var(--primary-text-color,#20252b);opacity:.6;pointer-events:none;z-index:2}
+.zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none;z-index:3}
+.tooltip{position:absolute;z-index:4;box-sizing:border-box;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;overflow:auto;overflow-wrap:anywhere;pointer-events:none}
+.tooltip strong{display:block;margin-bottom:4px}
+.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px}
+.tooltip i{margin-top:4px}
+.tooltip small{grid-column:2;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums}
+.state-limit{font-size:12px;color:var(--error-color,#db4437);overflow-wrap:anywhere;position:relative}
+.message{font-size:14px;color:var(--secondary-text-color,#666);min-height:60px}
+.retry{display:block;margin-top:12px;min-height:44px;background:transparent;color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:6px;padding:8px 12px}[hidden]{display:none}</style><ha-card><div class="content"><h2>${esc(c.title??(nl?'Statustijdlijn':'Status timeline'))}</h2>${controls}${navigation}${c.show_navigation!==false&&this._status==='ready'?`<div class="period-range">${esc(this._time(a,true))} – ${esc(this._time(b,true))}</div>`:''}${body}</div></ha-card>`;
+  const nav=this.shadowRoot.querySelector('.period-controls');if(nav){nav.querySelector('select').onchange=e=>this._setPeriod(Number(e.target.value));for(const [key,direction] of [['previous',-1],['next',1],['now',0]])nav.querySelector(`[data-period="${key}"]`).onclick=()=>this._navigate(direction);}
+  const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this.shadowRoot.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:.5,out:2,reset:0}[button.dataset.zoom]));this._bindInteractions();const renderedChart=this.shadowRoot.querySelector('.chart'),restoreTooltip=()=>{if(this.shadowRoot.querySelector('.chart')===renderedChart){SharedGraph.restoreHover(this);if(this._cursor!=null)this._showTooltip(this._cursor,false);}};const ready=this.shadowRoot.querySelector('ha-card')?.updateComplete;if(ready?.then)ready.then(restoreTooltip);else restoreTooltip();
+ }
+};

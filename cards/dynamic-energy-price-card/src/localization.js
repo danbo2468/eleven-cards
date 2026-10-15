@@ -1,5 +1,7 @@
 // Dutch source strings are translation keys; no user-provided text is translated.
 export const ENGLISH = Object.freeze({
+  "De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Goedkoopste uren per dag in op meer dan 0.":"The table is not shown because 0 hours are selected. Set Cheapest hours per day to a value greater than 0.",
+  "De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Beste terugleveruren per dag in op meer dan 0.":"The table is not shown because 0 hours are selected. Set Best export hours per day to a value greater than 0.",
   "Prijsgrenzen en prijskleuren":"Price thresholds and colors",
   "Tabelkolommen":"Table columns",
   "Lijn":"Line",

@@ -47,7 +47,7 @@ test('native form localizes groups, selectors, helpers and units without changin
   const fields = new Map();
   const walk = (schema) => schema.forEach(field => { fields.set(field.name, field); if (field.schema) walk(field.schema); });
   walk(form.schema);
-  for (const [language, expected] of [['en', ['Graph', 'Import', 'Export', 'Solid', 'h', 'Title']], ['nl', ['Grafiek', 'Afname', 'Teruglevering', 'Doorgetrokken', 'uur', 'Titel']]]) {
+  for (const [language, expected] of [['en', ['General', 'Import', 'Export', 'Solid', 'h', 'Title']], ['nl', ['Algemeen', 'Afname', 'Teruglevering', 'Doorgetrokken', 'uur', 'Titel']]]) {
     rootHass = { language };
     const context = { hass: rootHass };
     assert.equal(fields.get('graph_settings').title, expected[0]);
@@ -77,7 +77,7 @@ test('native editor callbacks use their own hass even when frontend root languag
   rootHass = { language: 'en' };
   const form = Card.getConfigForm();
   const context = { hass: { language: 'nl' } };
-  assert.equal(form.computeLabel.call(context, form.schema[0]), 'Grafiek');
+  assert.equal(form.computeLabel.call(context, form.schema[0]), 'Algemeen');
   assert.equal(form.computeLabel.call(context, form.schema.find(s=>s.name==='import_settings')), 'Afname');
   assert.equal(form.computeLabel.call(context, form.schema.find(s=>s.name==='export_settings')), 'Teruglevering');
 });

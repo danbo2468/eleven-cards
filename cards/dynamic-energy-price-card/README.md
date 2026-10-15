@@ -168,7 +168,7 @@ show_export_table: true
 
 ### Average price per favorable period
 
-Enable **Average price in table** under **General** in the visual editor, or add:
+Enable **Average price in table** under **Table columns** in the visual editor, or add:
 
 ```yaml
 show_period_average: true
@@ -178,7 +178,7 @@ This adds a **~ct** average-price column in ct/kWh to the favorable-period table
 
 ### Choose table columns
 
-Under **General**, switch each table column on or off independently: day, tariff, start, end, duration and average price. This applies to both tariffs. All existing columns remain enabled by default; average price remains off. If every column is disabled, the table section is hidden. Compact rows use **Today / Tmr.** and **Imp. / Exp.** in English, or **Vdg. / Mrg.** and **Af. / Ter.** in Dutch. Hover and screen-reader labels retain the full day and tariff meanings. Chart labels remain unchanged.
+Under **Table columns**, switch each table column on or off independently: day, tariff, start, end, duration and average price. This applies to both tariffs. All existing columns remain enabled by default; average price remains off. If every column is disabled, the table section is hidden. Compact rows use **Today / Tmr.** and **Imp. / Exp.** in English, or **Vdg. / Mrg.** and **Af. / Ter.** in Dutch. Hover and screen-reader labels retain the full day and tariff meanings. Chart labels remain unchanged.
 
 ### Grid-import energy per interval (optional)
 
@@ -281,7 +281,11 @@ Thresholds must be ordered as:
 cheap_price < normal_price < expensive_price
 ```
 
-The visual editor uses **Graph**, **Price thresholds and colors**, **Import**, **Export**, **Grid-import energy**, and **Table columns**. Each tariff owns one source selector and separate **Line**, **Fill**, and **Favorable periods** sections. Grid-import controls appear only when enabled; minimum block duration appears only for that selection method. The synchronization group appears only while hover synchronization is enabled.
+The visual editor uses **General**, **Price thresholds and colors**, **Import**, **Export**, **Grid-import energy**, and **Table columns**. Each tariff owns one source selector and separate **Line**, **Fill**, and **Favorable periods** sections. Grid-import controls appear only when enabled; minimum block duration appears only for that selection method. The synchronization group appears only while hover synchronization is enabled.
+
+All price inputs in the visual editor use **ct/kWh**, including price thresholds and the export correction. For example, enter `15` for 15 ct/kWh. Sensor data and YAML retain their existing EUR/kWh units (`0.15` for the same price); conversion is automatic and existing configurations keep their values.
+
+When a favorable-period table is enabled but its tariff has zero selected hours, a hint below the table switch explains why the table is hidden and which hours setting to increase. Import and export selections are independent.
 
 Each series has an independent `import_line_interpolation`, `export_line_interpolation`, or `consumption_line_interpolation` (`smooth`, `linear`, `step`). The legacy shared `line_interpolation` YAML remains valid; the editor materializes its effective value separately for every series. Opening the editor does not save anything.
 
