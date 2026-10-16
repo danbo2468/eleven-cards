@@ -9,10 +9,11 @@ Home Assistant dashboard cards for energy prices, sensor graphs and state timeli
 | **Energy** | Import and export prices, favorable periods and an optional grid-import energy overlay. | [Energy documentation](cards/dynamic-energy-price-card/README.md) |
 | **History** | Recorded values from 1–8 numeric sensors with the same unit. | [History documentation](cards/history-graph-card/README.md) |
 | **Timeline** | State history for entities such as doors, switches and people. | [Timeline documentation](cards/timeline-card/README.md) |
+| **Bar Chart (beta)** | Vertical sensor-history bars, including delta per time interval. | [Bar Chart documentation](cards/bar-chart/README.md) |
 
 ![Eleven Dynamic Energy Price Card preview](cards/dynamic-energy-price-card/docs/images/revised-default-dark-desktop.png)
 
-All three cards include a visual editor and follow Home Assistant's light/dark theme and Dutch/English frontend language. Energy and History support synchronized hover across cards.
+All four cards include a visual editor and follow Home Assistant's light/dark theme and Dutch/English frontend language. Energy, History and Bar Chart support synchronized hover across cards.
 
 The cards use existing Home Assistant data. They do not provide tariffs, create sensors or control devices. See each card's documentation for its sensor requirements and configuration options.
 
@@ -26,7 +27,7 @@ The cards use existing Home Assistant data. They do not provide tariffs, create 
 4. Under dashboard resources, check that `/hacsfiles/eleven-cards/eleven-cards.js` is registered as a **JavaScript module**. Add it if it is missing.
 5. Refresh your browser.
 
-All three cards are included in one module. Use the custom repository to install them; Eleven Cards is not included in the default HACS list.
+All four cards are included in the current source build. HACS releases may lag behind the main branch. Use the custom repository to install them; Eleven Cards is not included in the default HACS list.
 
 ### Manual installation
 
@@ -48,6 +49,7 @@ For YAML configuration, use these types:
 | Energy | `custom:eleven-dynamic-energy-price-card` |
 | History | `custom:eleven-history-graph-card` |
 | Timeline | `custom:eleven-timeline-card` |
+| Bar Chart (beta) | `custom:eleven-bar-chart` |
 
 The card documentation linked above includes YAML examples and option details.
 

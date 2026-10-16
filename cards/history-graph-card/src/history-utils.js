@@ -28,7 +28,7 @@ export function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 export function editorConfig(config) {
- const data={hours_to_show:24,graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -94,7 +94,7 @@ export function validateConfig(config) {
  const hours=config.hours_to_show??24;
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -121,7 +121,7 @@ export function validateConfig(config) {
  result.graph_mode=result.graph_mode??'lines';
  result.aggregation_period=result.aggregation_period??'none';result.aggregation_method=result.aggregation_method??'avg';
  if(!['none','minute','quarter_hour','hour','day','week','month'].includes(result.aggregation_period))throw new Error('aggregation_period');
- if(!['min','max','avg'].includes(result.aggregation_method))throw new Error('aggregation_method');
+ if(!['min','max','avg','delta'].includes(result.aggregation_method))throw new Error('aggregation_method');
  if(!['lines','stacked'].includes(result.graph_mode))throw new Error('graph_mode');
  const options=result.series_options??[];
  if(!Array.isArray(options)||options.some(s=>!s||!entities.includes(s.entity)||(s.name!=null&&typeof s.name!=='string')||(s.color!=null&&s.color!==''&&!validColor(s.color)))||new Set(options.map(s=>s.entity)).size!==options.length)throw new Error('series_options');
@@ -273,7 +273,15 @@ export function aggregateSeries(series,start,end,period='none',method='avg',zone
  return series.map(s=>{const points=[];let index=0;
   for(const [a,b] of bounds){let cursor=a,total=0,duration=0,min=Infinity,max=-Infinity;
    while(index<s.points.length&&s.points[index].t<=a)index++;
-   let value=index?s.points[index-1].v:null;const fragments=[{t:a,valid:value!==null}];
+   let value=index?s.points[index-1].v:null;
+   if(method==='delta'){
+    const first=value;let valid=Number.isFinite(first);
+    // Recorder holds each reading until the next one. Include an exact end
+    // boundary once as this bin's end and the following bin's start.
+    while(index<s.points.length&&s.points[index].t<=b){value=s.points[index++].v;valid&&=Number.isFinite(value);}
+    points.push({t:a,v:valid?value-first:null});continue;
+   }
+   const fragments=[{t:a,valid:value!==null}];
    while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
    const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
    for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});

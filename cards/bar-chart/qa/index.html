@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eleven Bar Chart — synthetic QA</title>
+<style>
+:root{font-family:system-ui,sans-serif;--primary-text-color:#212121;--secondary-text-color:#616161;--card-background-color:#fff;--secondary-background-color:#f2f3f4;--divider-color:#ddd;--primary-color:#2196f3;background:#f1f3f5;color:var(--primary-text-color)}
+:root.dark{--primary-text-color:#e8e8e8;--secondary-text-color:#aaa;--card-background-color:#1c1c1c;--secondary-background-color:#282828;--divider-color:#444;background:#111}
+body{margin:16px}h1{font-size:16px;margin:0 0 8px}p{font-size:13px;color:var(--secondary-text-color)}.stage{max-width:850px;height:420px;margin:24px auto}eleven-bar-chart{width:100%;height:100%}
+</style>
+<h1>Eleven Bar Chart — synthetic demonstration</h1><p>Generated power readings, including negative values and an unavailable interval. No authentic Home Assistant readings.</p>
+<div class="stage"><eleven-bar-chart></eleven-bar-chart></div>
+<script type="module">
+customElements.define('ha-card',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<style>:host{border:1px solid var(--divider-color);border-radius:12px;box-sizing:border-box;box-shadow:0 2px 3px #0001;overflow:hidden}</style><slot></slot>';}});
+await import('../dist/eleven-bar-chart.js');
+window.card=document.querySelector('eleven-bar-chart');
+window.qaConfig={type:'custom:eleven-bar-chart',entities:['sensor.solar','sensor.grid'],hours_to_show:12,aggregation_period:'hour',series_options:[{entity:'sensor.solar',color:'#e78a14'},{entity:'sensor.grid',color:'#2196f3'}]};
+window.qaHass={language:'en',config:{time_zone:'Europe/Amsterdam'},states:{'sensor.solar':{state:'50',attributes:{friendly_name:'Solar',unit_of_measurement:'W'}},'sensor.grid':{state:'200',attributes:{friendly_name:'Grid',unit_of_measurement:'W'}}},callApi:async(method,url)=>{
+ const q=new URLSearchParams(url.split('?')[1]),end=Date.parse(q.get('end_time')),start=Date.parse(decodeURIComponent(url.split('?')[0].split('period/')[1]));
+ return qaConfig.entities.map((id,i)=>Array.from({length:49},(_,n)=>({...(n===0?{entity_id:id}:{}),state:i===1&&n>=20&&n<24?'unavailable':String(Math.round(i?200+350*Math.sin(n/5):Math.max(0,600*Math.sin(n/49*Math.PI)))),last_changed:new Date(start+(end-start)*n/48).toISOString()})));
+}};
+card.setConfig(qaConfig);card.hass=qaHass;
+</script></html>
