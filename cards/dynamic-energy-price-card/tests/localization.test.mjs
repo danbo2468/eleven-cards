@@ -114,7 +114,9 @@ test('empty states, source errors, missing intervals and recovery guidance are l
     card.hass = { ...hass, states: { 'sensor.prices': { attributes: { data } } } };
     assert.match(card.shadowRoot.innerHTML, language === 'en' ? /1 price interval missing/ : /1 prijsinterval ontbreekt/);
     assert.match(card.shadowRoot.innerHTML, language === 'en' ? /Tomorrow&#039;s prices are missing/ : /Morgenprijzen ontbreken/);
-    assert.throws(() => card.setConfig({}), language === 'en' ? /An import price entity is required/ : /Een prijsentity voor afname is verplicht/);
+    assert.doesNotThrow(() => card.setConfig({}));
+    card.hass = hass;
+    assert.match(card.shadowRoot.innerHTML, language === 'en' ? /Choose a price source/ : /Kies een prijsbron/);
     assert.throws(() => card.setConfig({ entity: 'sensor.prices', cheap_price: 1 }), language === 'en' ? /Price thresholds must increase/ : /Prijsniveaus moeten oplopen/);
   }
 });

@@ -66,3 +66,48 @@ test('native form exposes localized appearance and gradient controls',()=>{
  assert.equal(form.computeLabel.call({hass:{language:'en'}},{name:'line_width'}),'Line width');
  assert.doesNotThrow(()=>form.computeLabel({}));
 });
+test('Y-axis has its own localized discoverable expansion with optional flat fields',async()=>{
+ const form=C.getConfigForm(),group=form.schema.find(s=>s.name==='y_axis');
+ assert.ok(group,'dedicated Y-axis group');assert.equal(group.type,'expandable');assert.equal(group.flatten,true);
+ assert.deepEqual(group.schema.map(s=>s.name),['y_min','y_max','y_step','align_zero']);
+ for(const field of group.schema.filter(s=>s.name!=='align_zero')){assert.notEqual(field.required,true);assert.equal(field.selector.number.step,'any');}
+ assert.equal(form.computeLabel.call({hass:{language:'nl'}},group),'Y-as');
+ assert.equal(form.computeLabel.call({hass:{language:'en'}},group),'Y-axis');
+ assert.equal(form.computeLabel.call({hass:{language:'nl'}},{name:'y_step'}),'Stapgrootte Y-as');
+ assert.match(form.computeHelper.call({hass:{language:'en'}},{name:'y_step'}),/200/);
+ assert.ok(!form.schema.find(s=>s.name==='graph_settings').schema.some(s=>s.name.startsWith('y_')));
+ const {editorConfig,cardConfig,validateConfig}=await import('../src/history-utils.js');
+ const original={entities:['sensor.a'],y_min:-1.1,y_max:1.1,y_step:0.5};
+ const saved=cardConfig(editorConfig(original));
+ for(const key of ['y_min','y_max','y_step'])assert.equal(saved[key],original[key]);
+ const reset=validateConfig(cardConfig({...editorConfig(saved),y_min:'',y_max:null,y_step:''}));
+ for(const key of ['y_min','y_max','y_step'])assert.equal(reset[key],undefined);
+});
+test('renderer uses nice ticks by default and actual manual tick positions',()=>{
+ const automatic=render();assert.deepEqual(automatic._range,[0,40]);
+ const labels=card=>[...card.shadowRoot.innerHTML.matchAll(/class="axis-y"[^>]*>([^<]+)<\/span>/g)].map(m=>m[1]);
+ assert.deepEqual(labels(automatic),['40','30','20','10','0']);
+ const fixed=render({y_min:11,y_max:23,y_step:5});
+ assert.deepEqual(fixed._range,[11,23]);assert.deepEqual(labels(fixed),['20','15']);
+ const positions=[...fixed.shadowRoot.innerHTML.matchAll(/class="axis-y" style="top:calc\(([\d.]+)%/g)].map(m=>Number(m[1]));
+ assert.ok(Math.abs(positions[0]-25)<1e-8);assert.ok(Math.abs(positions[1]-200/3)<1e-8);
+});
+test('invalid or excessive manual steps show actionable localized errors',()=>{
+ assert.throws(()=>new C().setConfig({entities:['sensor.a'],y_step:0}),/positive/);
+ assert.throws(()=>new C().setConfig({entities:['sensor.a'],y_min:0,y_max:1000,y_step:1}),/200/);
+ const dutch=new C();dutch._hass={language:'nl'};
+ assert.throws(()=>dutch.setConfig({entities:['sensor.a'],y_step:-1}),/positief/);
+ const excessive=render({y_step:0.001});
+ assert.match(excessive.shadowRoot.innerHTML,/200/);assert.match(excessive.shadowRoot.innerHTML,/increase/i);
+ assert.doesNotMatch(excessive.shadowRoot.innerHTML,/class="series-line"/);
+ assert.equal(excessive._config.y_step,0.001,'never silently override manual step');
+});
+test('decimal tick labels stay distinct and tiny sensor values never display as zero',async()=>{
+ const card=render({y_min:0.001,y_max:0.0025,y_step:0.0005});
+ const labels=[...card.shadowRoot.innerHTML.matchAll(/class="axis-y"[^>]*>([^<]+)<\/span>/g)].map(m=>m[1]);
+ assert.deepEqual(labels,['0.0025','0.002','0.0015','0.001']);
+ const {number}=await import('../src/localization.js');
+ assert.notEqual(number(0.00000012,'en'),'0');assert.notEqual(number(-0.00000012,'nl'),'-0');
+ const nl=render({y_min:0.101,y_max:0.104,y_step:0.001});nl._hass.language='nl';nl._render();
+ for(const value of ['0,101','0,102','0,103','0,104'])assert.ok(nl.shadowRoot.innerHTML.includes('>'+value+'</span>'),value);
+});

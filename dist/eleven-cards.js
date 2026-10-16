@@ -1,4 +1,4 @@
-// Eleven Cards — HACS collection; three cards, no external dependencies.
+// Eleven Cards — HACS collection; five cards, no external dependencies.
 // Eleven Dynamic Energy Price Card — standalone dashboard bundle
 (()=>{
 "use strict";
@@ -24,6 +24,36 @@ class SharedGraph {
       if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
     };
     window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
   }
   static publishHover(host, timestamp) {
     const group = this.hoverGroup(host);
@@ -50,6 +80,10 @@ class SharedGraph {
   static disconnectHover(host) {
     this.clearHover(host);
     if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
     host._sharedHoverListener = null;
     host._receiveSharedHover = null;
   }
@@ -334,6 +368,44 @@ function createPriceTicks(minimum, maximum, count = 5) {
   return Array.from({ length: size }, (_, index) => Number((Number(maximum) - step * index).toFixed(10)));
 }
 
+// get_price returns unscaled base-currency totals, not chartdata metadata.
+function tibberPriceData(response) {
+  if(response?.success===false)throw Error('unavailable');
+  if(!Array.isArray(response?.price_info))throw Error('format');
+  return response.price_info.flatMap(row=>{
+    if(typeof row?.total!=='number' || !Number.isFinite(row.total) || typeof row.startsAt!=='string' || !Number.isFinite(Date.parse(row.startsAt)))return [];
+    return [{start_time:row.startsAt,price_per_kwh:row.total}];
+  });
+}
+
+function tibberPriceRange(now, timeZone) {
+  const day=localDayKey(now,timeZone);
+  const midnight=key=>{
+    const target=Date.parse(`${key}T00:00:00Z`);
+    let instant=target;
+    // Resolve each midnight independently: a two-day range can span 47/49 hours.
+    for(let i=0;i<4;i++) {
+      const p=zonedParts(instant,timeZone);
+      const local=Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00Z`);
+      if(local===target)return new Date(instant).toISOString();
+      instant+=target-local;
+    }
+    throw Error('timezone');
+  };
+  return {start_time:midnight(day),end_time:midnight(addDaysToKey(day,2))};
+}
+
+// Zonneplan One exposes raw fixed-point amounts in forecast, not its scaled sensor state.
+function zonneplanPriceData(forecast) {
+  if(!Array.isArray(forecast))return [];
+  return forecast.flatMap(row=>{
+    const start_time=row?.start_date ?? row?.datetime;
+    const amount=row?.price_tax_included?.amount ?? row?.electricity_price;
+    if(typeof amount!=='number' || !Number.isFinite(amount) || !Number.isFinite(Date.parse(start_time)))return [];
+    return [{start_time,price_per_kwh:amount/10000000}];
+  });
+}
+
 function normalizePoints(data, timeZone) {
   if (!Array.isArray(data)) return [];
   return data
@@ -478,6 +550,20 @@ function selectDurationByPrice(points, totalMinutes, direction, options = {}) {
 
 // Dutch source strings are translation keys; no user-provided text is translated.
 const ENGLISH = Object.freeze({
+  "Prijsbron":"Price source",
+  "Tibber-aansluiting":"Tibber connection",
+  "Prijs-/templatesensor":"Price/template sensor",
+  "Tibber Prices (get_price)":"Tibber Prices (get_price)",
+  "Kies een prijs-/templatesensor, Tibber Prices get_price of Zonneplan One forecast.":"Choose a price/template sensor, Tibber Prices get_price or Zonneplan One forecast.",
+  "Selecteer de Zonneplan One-tariefsensor met forecast. Uur- en kwartierprijzen worden omgerekend naar EUR/kWh.":"Select the Zonneplan One tariff sensor with forecast. Hourly and quarter-hour prices are converted to EUR/kWh.",
+  "Optioneel bij één aansluiting. Kies de aansluiting bij meerdere Tibber Prices-configuraties. Alleen EUR/kWh.":"Optional with one connection. Select the connection when multiple Tibber Prices configurations exist. EUR/kWh only.",
+  "Tibber-prijzen laden…":"Loading Tibber prices…",
+  "Tibber-prijzen niet beschikbaar":"Tibber prices unavailable",
+  "Alleen EUR/kWh wordt ondersteund.":"Only EUR/kWh is supported.",
+  "Prijsgegevens worden opgehaald.":"Fetching price data.",
+  "Controleer de Tibber Prices-integratie, get_price en de gekozen aansluiting.":"Check the Tibber Prices integration, get_price and the selected connection.",
+  "Kies een prijsbron":"Choose a price source",
+  "Selecteer een prijsbron bij Afname in de kaartinstellingen.":"Select a price source under Import in the card settings.",
   "De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Goedkoopste uren per dag in op meer dan 0.":"The table is not shown because 0 hours are selected. Set Cheapest hours per day to a value greater than 0.",
   "De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Beste terugleveruren per dag in op meer dan 0.":"The table is not shown because 0 hours are selected. Set Best export hours per day to a value greater than 0.",
   "Prijsgrenzen en prijskleuren":"Price thresholds and colors",
@@ -685,6 +771,8 @@ const PLOT = { left: 44, right: 12, top: 20, bottom: 34 };
 const IMPORT_MODES = new Set(['import', 'both']);
 const EXPORT_MODES = new Set(['export', 'both']);
 const DEFAULT_CONFIG = Object.freeze({
+  import_source: 'sensor',
+  export_source: 'sensor',
   line_interpolation: 'smooth',
   graph_mode: 'import',
   current_price_mode: 'import',
@@ -898,21 +986,31 @@ class DynamicEnergyPriceCard extends HTMLElement {
       ...(data[p+'_selection_mode']==='minimum_blocks'?[field(p+'_minimum_duration')]:[]),
       field(p+'_favorable_color'),field(p==='import'?'show_cheapest_table':'show_export_table')
     ]);
+    const source=p=>[
+      select(p+'_source',[['sensor','Prijs-/templatesensor'],['tibber_prices','Tibber Prices (get_price)'],['zonneplan','Zonneplan One (forecast)']]),
+      ...(data[p+'_source']==='tibber_prices'
+        ? [{name:p+'_tibber_entry',selector:{config_entry:{integration:'tibber_prices'}}}]
+        : [field(p==='import'?'entity':'export_entity')])
+    ];
     const schema=[
       group('graph_settings','Algemeen',['title','show_title','graph_mode','current_price_mode','tomorrow_after','show_average_line','show_price_levels','show_hover_line','sync_hover',...(data.sync_hover?['hover_sync_group']:[])].map(field)),
       group('price_settings','Prijsgrenzen en prijskleuren',[
         ...['cheap_price','normal_price','expensive_price'].map(field),
         group('price_color_settings','Prijskleuren',['cheap_color','normal_color','expensive_color','zero_color','negative_color'].map(field))
       ]),
-      group('import_settings','Afname',[field('entity'),line('import'),fill('import'),favorable('import')]),
-      group('export_settings','Teruglevering',[field('export_entity'),field('export_price_offset'),line('export'),fill('export'),favorable('export')]),
+      group('import_settings','Afname',[...source('import'),line('import'),fill('import'),favorable('import')]),
+      group('export_settings','Teruglevering',[...source('export'),field('export_price_offset'),line('export'),fill('export'),favorable('export')]),
       group('consumption_settings','Netafname energie',[field('show_consumption'),...(data.show_consumption?[field('consumption_entity'),line('consumption'),fill('consumption')]:[])]),
       group('table_settings','Tabelkolommen',['day','type','start','end','duration','average'].map(c=>field('show_period_'+c)))
     ];
     const newLabels={graph_settings:'Algemeen',price_settings:'Prijsgrenzen en prijskleuren',table_settings:'Tabelkolommen'};
-    const suffix={line_interpolation:'Lijnverloop',color_mode:'Lijnkleur',fill_mode:'Vulkleurmodus',fill_opacity:'Dekking',line_settings:'Lijn',fill_settings:'Vulling'};
+    const suffix={source:'Prijsbron',tibber_entry:'Tibber-aansluiting',line_interpolation:'Lijnverloop',color_mode:'Lijnkleur',fill_mode:'Vulkleurmodus',fill_opacity:'Dekking',line_settings:'Lijn',fill_settings:'Vulling'};
     return {schema,computeLabel:function(s){const key=s?.name??'',label=newLabels[key]??suffix[key.replace(/^(import|export|consumption)_/,'')];return label?translate(label,resolveLanguage(this?.hass??frontendHass())):base.computeLabel.call(this,s);},computeHelper:function(s){
       const key=s?.name??'',lang=resolveLanguage(this?.hass??frontendHass());
+      if(key.endsWith('_source'))return translate('Kies een prijs-/templatesensor, Tibber Prices get_price of Zonneplan One forecast.',lang);
+      if((key==='entity' && data.import_source==='zonneplan') || (key==='export_entity' && data.export_source==='zonneplan'))
+        return translate('Selecteer de Zonneplan One-tariefsensor met forecast. Uur- en kwartierprijzen worden omgerekend naar EUR/kWh.',lang);
+      if(key.endsWith('_tibber_entry'))return translate('Optioneel bij één aansluiting. Kies de aansluiting bij meerdere Tibber Prices-configuraties. Alleen EUR/kWh.',lang);
       if(key==='show_cheapest_table' && data.show_cheapest_table && !isCheapestHoursEnabled(data.cheapest_hours))
         return translate('De tabel verschijnt niet omdat er 0 uur is geselecteerd. Stel Goedkoopste uren per dag in op meer dan 0.',lang);
       if(key==='show_export_table' && data.show_export_table && !isCheapestHoursEnabled(data.export_best_hours))
@@ -1199,13 +1297,12 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   static getStubConfig() {
     return {
-      entity: 'sensor.tibber_prijzen',
       ...DEFAULT_CONFIG,
     };
   }
 
   setConfig(config) {
-    if (!config?.entity) throw new Error(this._t("Een prijsentity voor afname is verplicht."));
+    config ??= {};
     if (config.sync_hover !== undefined && typeof config.sync_hover !== 'boolean') throw new Error('sync_hover');
     if (config.hover_sync_group != null && typeof config.hover_sync_group !== 'string') throw new Error('hover_sync_group');
     SharedGraph.clearHover(this);
@@ -1213,6 +1310,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
       ...DEFAULT_CONFIG,
       ...config,
     };
+    for(const prefix of ['import','export']) {
+      if(!['sensor','tibber_prices','zonneplan'].includes(this._config[`${prefix}_source`]))throw Error(`${prefix}_source`);
+    }
+    this._resetTibber();
+    this._watchTibberConnection();
     this._config.line_interpolation = SharedGraph.interpolation(this._config.line_interpolation);
     for(const p of ['import','export','consumption']) {
       if(this._config[p+'_line_interpolation']!==undefined)SharedGraph.interpolation(this._config[p+'_line_interpolation']);
@@ -1243,7 +1345,95 @@ class DynamicEnergyPriceCard extends HTMLElement {
   _formatDay(timestamp, timeZone) { return formatDay(timestamp, timeZone, this._language); }
 
   _hasExportSource() {
-    return Boolean(this._config?.export_entity);
+    return this._config?.export_source === 'tibber_prices' || Boolean(this._config?.export_entity);
+  }
+
+  _tibberKey(prefix) {
+    const zone=this._hass?.config?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return `${this._config[`${prefix}_tibber_entry`] || ''}|${localDayKey(new Date(),zone)}`;
+  }
+
+  _sourceState(prefix) {
+    if(this._config[`${prefix}_source`] === 'zonneplan') {
+      const state=this._hass?.states?.[this._config[prefix==='import'?'entity':'export_entity']];
+      return state ? {...state,attributes:{...state.attributes,data:zonneplanPriceData(state.attributes?.forecast)}} : null;
+    }
+    if(this._config[`${prefix}_source`] !== 'tibber_prices')
+      return this._hass?.states?.[this._config[prefix==='import'?'entity':'export_entity']];
+    const cached=this._tibberCache?.get(this._tibberKey(prefix));
+    return cached?.status==='ready' ? {attributes:{data:cached.data}} : null;
+  }
+
+  _resetTibber() {
+    if(this._tibberTimer)clearTimeout(this._tibberTimer);
+    this._tibberTimer=undefined;
+    this._tibberCache = new Map();
+  }
+
+  _unwatchTibberConnection() {
+    for(const event of ['ready','disconnected'])this._tibberConnection?.removeEventListener(event,this._onTibberConnection);
+    this._tibberConnection=undefined;
+  }
+
+  _scheduleTibberRefresh() {
+    if(!this.isConnected || this._tibberTimer)return;
+    this._tibberTimer=setTimeout(()=>{
+      this._resetTibber();
+      if(this.isConnected && this._hass)this._render();
+    },300000);
+  }
+
+  _watchTibberConnection() {
+    const needed=this._config?.import_source==='tibber_prices' || (this._exportRequired() && this._config?.export_source==='tibber_prices');
+    const connection=needed?this._hass?.connection:undefined;
+    if(connection===this._tibberConnection)return;
+    this._unwatchTibberConnection();this._resetTibber();this._tibberConnection=connection;
+    this._onTibberConnection=()=>{
+      this._resetTibber();this._lastSignature=null;
+      if(connection?.connected!==false && this._config && this._hass)this._render();
+    };
+    for(const event of ['ready','disconnected'])connection?.addEventListener(event,this._onTibberConnection);
+  }
+
+  _tibberStatusCard(prefix) {
+    const status=this._tibberCache?.get(this._tibberKey(prefix))?.status;
+    const label=this._t(prefix==='import'?'Afname':'Teruglevering');
+    return this._stateCard(
+      this._t(status==='loading'?'Tibber-prijzen laden…':'Tibber-prijzen niet beschikbaar'),
+      `${label}: ${this._t(status==='currency'?'Alleen EUR/kWh wordt ondersteund.':status==='loading'?'Prijsgegevens worden opgehaald.':'Controleer de Tibber Prices-integratie, get_price en de gekozen aansluiting.')}`,
+    );
+  }
+
+  _ensureTibber(prefix) {
+    if(this._config[`${prefix}_source`] !== 'tibber_prices' || !this._hass || this._hass.connection?.connected===false) return;
+    const key=this._tibberKey(prefix);
+    this._tibberCache ??= new Map();
+    const previous=this._tibberCache.get(key);
+    if(previous && (previous.status==='loading' || Date.now()-previous.fetchedAt<300000)) {
+      if(previous.status!=='loading')this._scheduleTibberRefresh();
+      return;
+    }
+    const request={status:'loading'};
+    this._tibberCache.set(key,request);
+    (async()=>{
+      try {
+        // get_price has no currency metadata. EUR homes are a documented precondition;
+        // HA's configured currency is a guard, not proof of the Tibber home's currency.
+        if(this._hass.config?.currency && this._hass.config.currency!=='EUR')throw Error('currency');
+        const zone=this._hass.config?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const service_data=tibberPriceRange(new Date(),zone);
+        const entry=this._config[`${prefix}_tibber_entry`];
+        if(entry)service_data.entry_id=entry;
+        const {response}=await this._hass.callWS({type:'call_service',domain:'tibber_prices',service:'get_price',service_data,return_response:true});
+        if(this._tibberCache?.get(key)!==request)return;
+        Object.assign(request,{status:'ready',data:tibberPriceData(response),fetchedAt:Date.now()});
+      } catch(error) {
+        if(this._tibberCache?.get(key)!==request)return;
+        Object.assign(request,{status:error?.message==='currency'?'currency':'error',fetchedAt:Date.now()});
+      }
+      this._scheduleTibberRefresh();
+      this._render();
+    })();
   }
 
   _exportRequired() {
@@ -1282,6 +1472,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     if (!this._config) return;
+    this._watchTibberConnection();
     this._watchConsumptionConnection();
     const importState = hass.states[this._config.entity];
     const exportState = this._config.export_entity ? hass.states[this._config.export_entity] : null;
@@ -1296,6 +1487,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   connectedCallback() {
     SharedGraph.connectHover(this, timestamp => this._receiveHover(timestamp));
+    this._watchTibberConnection();
     window.addEventListener('pointerdown', this._onOutsidePointer);
     this._watchConsumptionConnection();
     this._observeConsumptionSize();
@@ -1304,11 +1496,13 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   disconnectedCallback() {
     SharedGraph.disconnectHover(this);
+    this._unwatchTibberConnection();
     window.removeEventListener('pointerdown', this._onOutsidePointer);
     this._unwatchConsumptionConnection();
     this._consumptionResizeObserver?.disconnect();
     this._consumptionResizeObserver = undefined;
     this._resetConsumption();
+    this._resetTibber();
   }
 
   _observeConsumptionSize() {
@@ -1414,7 +1608,18 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   _render() {
-    const importState = this._hass?.states?.[this._config.entity];
+    const tibberImport=this._config.import_source==='tibber_prices';
+    if (!tibberImport && !this._config.entity) {
+      this.shadowRoot.innerHTML = this._stateCard(this._t("Kies een prijsbron"), this._t("Selecteer een prijsbron bij Afname in de kaartinstellingen."));
+      return;
+    }
+    this._ensureTibber('import');
+    if(this._exportRequired())this._ensureTibber('export');
+    const importState = this._sourceState('import');
+    if(tibberImport && !importState) {
+      this.shadowRoot.innerHTML=this._tibberStatusCard('import');
+      return;
+    }
     if (!importState) {
       this.shadowRoot.innerHTML = this._stateCard(
         this._t("Afname-entiteit niet gevonden"),
@@ -1429,7 +1634,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
       );
       return;
     }
-    const exportState = this._config.export_entity ? this._hass?.states?.[this._config.export_entity] : null;
+    const exportState = this._sourceState('export');
+    if(this._exportRequired() && this._config.export_source==='tibber_prices' && !exportState) {
+      this.shadowRoot.innerHTML=this._tibberStatusCard('export');
+      return;
+    }
     if (this._exportRequired() && this._config.export_entity && !exportState) {
       this.shadowRoot.innerHTML = this._stateCard(
         this._t("Teruglever-entiteit niet gevonden"),
@@ -1954,7 +2163,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
       : '—';
     const appearance = this._chart.consumptionAppearance;
     const range = point ? `${this._formatTime(point.timestamp, this._chart.timeZone)}–${this._formatTime(point.endTimestamp, this._chart.timeZone)}` : '';
-    return { point, html: `<span><i class="tooltip-series ${appearance.style}" style="--series-color:${appearance.swatchColor}"></i><b>${this._t('Netafname')}</b> ${value}</span>${range && (point.timestamp !== timestamp || point.endTimestamp - point.timestamp !== this._chart.intervalMs) ? `<small>${range}</small>` : ''}`,
+    return { point, html: `<span><i class="tooltip-series ${appearance.style}" style="--series-color:${appearance.swatchColor}"></i><b>${this._t('Netafname')}: ${value}</b>${range && (point.timestamp !== timestamp || point.endTimestamp - point.timestamp !== this._chart.intervalMs) ? `<small>${range}</small>` : ''}</span>`,
       live: `${this._t('Netafname')} ${value}, ${range}` };
   }
 
@@ -1966,6 +2175,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   _showPoint(index, publish = true, timestamp) {
+    if (!SharedGraph.tooltipInView(this)) { this._hideTooltip(publish); return; }
     const point = this._chart.timeline[index];
     if (!point) return;
     this._activeIndex = index;
@@ -1988,7 +2198,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
       const dot = this.shadowRoot.querySelector(`.hover-dot[data-series="${type}"]`);
       if (!Number.isFinite(price)) {
         dot?.setAttribute('hidden', '');
-        entries.push(`<span><b>${type === 'import' ? this._t("Afname") : this._t("Teruglevering")}</b> —</span>`);
+        entries.push(`<span><i></i><b>${type === 'import' ? this._t("Afname") : this._t("Teruglevering")}: —</b></span>`);
         liveEntries.push(`${type === 'import' ? this._t("afname") : this._t("teruglevering")} ${this._t("niet beschikbaar")}`);
         return;
       }
@@ -2004,7 +2214,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
       else dot.style.removeProperty('border-color');
       dot.setAttribute('class', `hover-dot${type === 'export' ? ' export-dot' : ''} ${priceClass}`);
       const favorable = selected.has(point.timestamp);
-      entries.push(`<span><i class="tooltip-series ${appearance.style}" style="--series-color:${appearance.swatchColor}"></i><b>${type === 'import' ? this._t("Afname") : this._t("Teruglevering")}</b> ${this._formatPrice(price)} ct/kWh</span>${favorable ? `<small>${favorableLabel} ${escapeHtml(hours)} ${this._t("uur")}</small>` : ''}`);
+      entries.push(`<span><i class="tooltip-series ${appearance.style}" style="--series-color:${appearance.color || `var(--${priceClass === 'negative' ? 'negative-color' : priceClass})`}"></i><b>${type === 'import' ? this._t("Afname") : this._t("Teruglevering")}: ${this._formatPrice(price)} ct/kWh</b>${favorable ? `<small>${favorableLabel} ${escapeHtml(hours)} ${this._t("uur")}</small>` : ''}</span>`);
       liveEntries.push(`${type === 'import' ? this._t("afname") : this._t("teruglevering")} ${this._formatPrice(price)} ${this._t("cent per kilowattuur")}${favorable ? `, ${favorableLabel} ${hours} ${this._t("uur")}` : ''}`);
     };
     if (this._chart.graphShowsImport) showDot('import', point.importPrice, this._chart.importSelected, this._config.cheapest_hours, this._t("goedkoopste"));
@@ -2209,24 +2419,16 @@ class DynamicEnergyPriceCard extends HTMLElement {
       .hover-dot.expensive { border-color: var(--expensive); }
       .export-dot { width: 14px; height: 14px; }
       .consumption-dot { width: 10px; height: 10px; border-width: 2px; }
-      .tooltip { position: absolute; z-index: 3; min-width: 180px; padding: 9px 11px; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); box-shadow: 0 5px 16px rgba(0, 0, 0, 0.2); pointer-events: none; font-variant-numeric: tabular-nums; }
+      ${SharedGraph.tooltipStyles()}
       .tooltip[data-horizontal="right"][data-vertical="below"] { transform: translate(12px, 12px); }
       .tooltip[data-horizontal="right"][data-vertical="above"] { transform: translate(12px, calc(-100% - 12px)); }
       .tooltip[data-horizontal="left"][data-vertical="below"] { transform: translate(calc(-100% - 12px), 12px); }
       .tooltip[data-horizontal="left"][data-vertical="above"] { transform: translate(calc(-100% - 12px), calc(-100% - 12px)); }
       .tooltip[data-horizontal="center"][data-vertical="below"] { transform: translate(-50%, 12px); }
       .tooltip[data-horizontal="center"][data-vertical="above"] { transform: translate(-50%, calc(-100% - 12px)); }
-      .with-consumption .tooltip { min-width: 0; padding: 7px 9px; }
-      .with-consumption .tooltip span { margin-top: 1px; line-height: 1.25; }
+
       .tooltip[data-horizontal="positioned"] { transform: none; }
-      .tooltip strong, .tooltip span, .tooltip small { display: block; white-space: nowrap; }
-      .tooltip strong { margin-bottom: 4px; font-size: var(--font-size-label); font-weight: var(--font-weight-strong); line-height: var(--line-height-tight); }
-      .tooltip span { margin-top: 2px; font-size: var(--font-size-label); line-height: var(--line-height-normal); }
-      .tooltip span b { min-width: 0; font-weight: var(--font-weight-strong); }
-      .tooltip small { margin: 1px 0 4px 16px; color: var(--secondary-text-color); font-size: var(--font-size-meta); line-height: var(--line-height-normal); }
-      .tooltip-series { display: inline-block; width: 12px; height: 0; margin-right: 6px; vertical-align: middle; border-top: 2px solid var(--series-color); background: none; }
-      .tooltip-series.dashed { border-top-style: dashed; }
-      .tooltip-series.dotted { border-top-style: dotted; }
+
       .price-table-wrap { flex: 0 1 auto; min-height: 0; max-height: 190px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--divider-color); overflow: auto; }
       .price-table-wrap h3 { margin: 0 0 4px; font-size: var(--font-size-label); font-weight: var(--font-weight-strong); line-height: var(--line-height-tight); }
       .table-unit { float: right; color: var(--secondary-text-color); font-size: var(--font-size-meta); font-weight: var(--font-weight-medium); }
@@ -2256,7 +2458,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
         .legend { gap: 6px 10px; margin-top: 9px; }
         .data-status { margin-top: 2px; }
         .chart { flex-basis: 260px; min-height: 110px; }
-        .tooltip { min-width: 166px; }
+
         .cheapest-table { font-size: 11px; }
         .cheapest-table th, .cheapest-table td { padding-inline: 1px; }
         .cheapest-table .period-type { padding-inline: 3px; }
@@ -2316,6 +2518,36 @@ class SharedGraph {
       if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
     };
     window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
   }
   static publishHover(host, timestamp) {
     const group = this.hoverGroup(host);
@@ -2342,6 +2574,10 @@ class SharedGraph {
   static disconnectHover(host) {
     this.clearHover(host);
     if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
     host._sharedHoverListener = null;
     host._receiveSharedHover = null;
   }
@@ -2404,6 +2640,30 @@ function graphStyles() {
   `;
 }
 
+// ../../shared/card-header.js
+// Shared markup stays in each card's shadow root: native links and existing
+// data-zoom handlers work without cross-bundle custom-element registration.
+const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function cardHeaderIcon(name){
+ const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',history:'m9 6 6 6-6 6'};
+ return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
+}
+function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en'}){
+ const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Geschiedenis']:['Zoom in','Zoom out','Reset zoom','History'];
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['in','out','reset'].map((action,i)=>`<button type="button" data-zoom="${action}" title="${label[i]}" aria-label="${label[i]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${zoom}<a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a></div></header>`;
+}
+function cardHeaderStyles(){return `
+.card-header{display:flex;align-items:flex-start;gap:8px;min-height:32px;flex:none;margin:-6px -4px 12px 0}
+.card-header h2{flex:1;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.header-actions{display:flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto}
+.zoom-controls{display:flex;gap:2px}
+.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);text-decoration:none;cursor:pointer}
+.header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
+.header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.header-actions svg,.period-controls button svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+`;}
+
 // src/history-utils.js
 function validColor(color){return typeof color==='string'?/^#[\da-f]{6}$/i.test(color):Array.isArray(color)&&color.length===3&&color.every(v=>Number.isInteger(v)&&v>=0&&v<=255);}
 const SERIES_COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
@@ -2416,7 +2676,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  const option=config.series_options?.find(s=>s.entity===config.entities[index])??{};
  const inherited=option.gradient_stops??(option.color?[]:config.gradient_stops??[]);
  const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
- const row={entity:config.entities[index],...(option.name?{name:option.name}:{}),
+ const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
   line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
   line_interpolation:option.line_interpolation??config.line_interpolation??'step',
   color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
@@ -2435,7 +2695,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 function editorConfig(config) {
- const data={hours_to_show:24,graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -2469,7 +2729,7 @@ function updateSeriesRow(data,index,value){
   delete rows[index].line_style_source;
   for(const key of LINE_GEOMETRY_KEYS)rows[index][key]=old[key];
  }
- if(old.entity!==rows[index].entity)for(const row of rows){
+ if(old.entity&&old.entity!==rows[index].entity)for(const row of rows){
   if(row.line_style_source===old.entity){
    if(rows[index].entity)row.line_style_source=rows[index].entity;
    else delete row.line_style_source;
@@ -2501,7 +2761,7 @@ function validateConfig(config) {
  const hours=config.hours_to_show??24;
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -2512,10 +2772,13 @@ function validateConfig(config) {
   else if(!Number.isFinite(result[key]))throw new Error(key);
  }
  if(result.y_min!==undefined&&result.y_max!==undefined&&result.y_min>=result.y_max)throw new Error('y_range');
+ if(result.y_step==null||result.y_step==='')delete result.y_step;
+ else if(!Number.isFinite(result.y_step)||result.y_step<=0)throw new Error('y_step');
+ if(result.y_step!==undefined&&result.y_min!==undefined&&result.y_max!==undefined)yAxis([],result);
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
- for(const key of ['show_fill','fill_fade','show_hover_line','show_legend']) if(typeof result[key]!=='boolean') throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
  if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
  const stops=result.gradient_stops??[];
  if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
@@ -2523,9 +2786,11 @@ function validateConfig(config) {
  result.gradient_mode=result.gradient_mode??'smooth';
  if(!['smooth','steps'].includes(result.gradient_mode)) throw new Error('gradient_mode');
  result.graph_mode=result.graph_mode??'lines';
+ result.data_source=result.data_source??'auto';
+ if(!['auto','history','statistics'].includes(result.data_source))throw new Error('data_source');
  result.aggregation_period=result.aggregation_period??'none';result.aggregation_method=result.aggregation_method??'avg';
  if(!['none','minute','quarter_hour','hour','day','week','month'].includes(result.aggregation_period))throw new Error('aggregation_period');
- if(!['min','max','avg'].includes(result.aggregation_method))throw new Error('aggregation_method');
+ if(!['min','max','avg','delta'].includes(result.aggregation_method))throw new Error('aggregation_method');
  if(!['lines','stacked'].includes(result.graph_mode))throw new Error('graph_mode');
  const options=result.series_options??[];
  if(!Array.isArray(options)||options.some(s=>!s||!entities.includes(s.entity)||(s.name!=null&&typeof s.name!=='string')||(s.color!=null&&s.color!==''&&!validColor(s.color)))||new Set(options.map(s=>s.entity)).size!==options.length)throw new Error('series_options');
@@ -2533,7 +2798,7 @@ function validateConfig(config) {
   if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
   if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
   for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
-  for(const key of ['show_fill','fill_fade'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
   if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
   if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
   if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
@@ -2555,6 +2820,47 @@ function gradientColor(stops,value,mode='smooth'){
   color=rgb(b.color);
  }
  return `rgb(${color.join(',')})`;
+}
+// Statistics are hourly or calendar summaries, never exact raw readings or Delta.
+function statisticsPeriod(config){
+ const source=config.data_source??'auto',period=config.aggregation_period??'none';
+ const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method??'avg')!=='delta';
+ if(source==='statistics'&&!supported)throw new Error('statistics_config');
+ if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48))return null;
+ return period==='none'?'hour':period;
+}
+// HA has used epoch seconds and milliseconds across Recorder versions.
+function statisticTime(value){return typeof value==='number'?(value<1e12?value*1000:value):Date.parse(value);}
+async function loadHistorySeries(hass,config,start,end){
+ const period=statisticsPeriod(config),strict=config.data_source==='statistics',selected=new Map();
+ if(period){
+  try{
+   const metadata=await hass.callWS({type:'recorder/get_statistics_metadata',statistic_ids:config.entities});
+   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
+   if(strict&&ids.length!==config.entities.length)throw new Error('statistics_unavailable');
+   if(ids.length){
+    const field=config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+    const response=await hass.callWS({type:'recorder/statistics_during_period',statistic_ids:ids,start_time:new Date(start).toISOString(),end_time:new Date(end).toISOString(),period,types:[field]});
+    for(const id of ids){
+     if(!Array.isArray(response[id])){if(strict)throw new Error('statistics_unavailable');continue;}
+     const points=[];
+     // End every bin explicitly: missing bins and unfinished tails stay gaps.
+     for(const row of [...response[id]].sort((a,b)=>statisticTime(a.start)-statisticTime(b.start))){
+      const a=Math.max(start,statisticTime(row.start)),b=Math.min(end,statisticTime(row.end));
+      if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)continue;
+      points.push({t:a,v:typeof row[field]==='number'&&Number.isFinite(row[field])?row[field]:null},{t:b,v:null});
+     }
+     if(points.some(p=>p.v!==null)||strict)selected.set(id,{id,source:'statistics',points:[...new Map(points.map(p=>[p.t,p])).values()].sort((a,b)=>a.t-b.t)});
+    }
+   }
+  }catch(error){if(strict)throw error;selected.clear();}
+ }
+ const missing=config.entities.filter(id=>!selected.has(id));
+ if(missing.length){
+  const response=await hass.callApi('GET',historyUrl({...config,entities:missing},end));
+  for(const s of decodeHistory(response,missing,start,end))selected.set(s.id,s);
+ }
+ return config.entities.map(id=>selected.get(id));
 }
 function numericState(state) {
  if(typeof state!=='string'||state.trim()==='') return null;
@@ -2597,8 +2903,43 @@ function seriesMetadata(hass,entities,options=[]) {
   const option=options.find(s=>s.entity===id);
   return {id,name:option?.name||state.attributes?.friendly_name||id,unit:state.attributes?.unit_of_measurement??''};
  });
- if(items.some(item=>item.unit!==items[0].unit)) throw new Error('unit');
- return {items,unit:items[0].unit};
+ return {items,unit:items[0]?.unit??''};
+}
+// Group by exact unit, never add or scale incompatible quantities together.
+function graphAxes(series,meta,config,start,end,visible=series.map(()=>true)){
+ const units=[...new Set(meta.items.filter((_,i)=>visible[i]).map(item=>item.unit))];
+ if(!units.length)units.push(meta.items[0]?.unit??'');
+ const seriesAxes=meta.items.map(item=>units.indexOf(item.unit));
+ const plotSeries=config.graph_mode==='stacked'?series.slice():series;
+ const axes=units.map((unit,index)=>{
+  const indices=seriesAxes.flatMap((axis,i)=>axis===index&&visible[i]?[i]:[]);
+  let group=indices.map(i=>series[i]);
+  if(config.graph_mode==='stacked'){
+   group=stackSeries(group,start,end);
+   indices.forEach((i,j)=>{plotSeries[i]=group[j];});
+  }
+  return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
+ });
+ return {axes:alignZeroAxes(axes,config,meta.items[0]?.unit),seriesAxes,plotSeries};
+}
+// Expand only negative axes; never rescale readings or clip the original ranges.
+function alignZeroAxes(axes,config={},primaryUnit=axes[0]?.unit){
+ if(config.align_zero===false)return axes;
+ const negative=axes.filter(a=>a.min<0);
+ if(negative.length<2)return axes;
+ const primary=negative.find(a=>a.unit===primaryUnit);
+ const fixed=primary&&[config.y_min,config.y_max].some(Number.isFinite);
+ const fraction=a=>-a.min/(a.max-a.min);
+ // Explicit first-unit bounds win, including bounds that exclude zero.
+ if(fixed&&(primary.max<0||(primary.max===0&&negative.some(a=>a.max>0))))return axes;
+ const part=fixed?fraction(primary):negative.reduce((sum,a)=>sum+Math.min(1,fraction(a)),0)/negative.length;
+ return axes.map(a=>{
+  if(a.min>=0||(fixed&&a===primary))return a;
+  const span=Math.max(-a.min/part,part===1?0:Math.max(0,a.max)/(1-part));
+  const min=-span*part,max=part===1?0:span*(1-part);
+  const options={y_min:min,y_max:max,...(a.unit===primaryUnit&&config.y_step!=null?{y_step:config.y_step}:{})};
+  return {unit:a.unit,...yAxis([],options)};
+ });
 }
 function yRange(series,config={}) {
  let min=Infinity,max=-Infinity;
@@ -2613,6 +2954,24 @@ function yRange(series,config={}) {
   else min=max-Math.max(1,Math.abs(max)*0.05);
  }
  return [min,max];
+}
+// Preserve yRange's padding contract; only the displayed axis uses nice steps.
+function yAxis(series,config={}){
+ if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
+ let [min,max]=yRange(series,config);
+ const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
+ const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
+ const clean=value=>Number(value.toPrecision(15));
+ // Snap only floating-point noise at integral step indices (e.g. 0.3 / 0.1).
+ const index=value=>{const n=value/step,nearest=Math.round(n);return Math.abs(n-nearest)<=Number.EPSILON*Math.max(1,Math.abs(n))*4?nearest:n;};
+ if(!Number.isFinite(config.y_min))min=clean(Math.floor(index(min))*step);
+ if(!Number.isFinite(config.y_max))max=clean(Math.ceil(index(max))*step);
+ const first=Math.ceil(index(min)),last=Math.floor(index(max));
+ const count=Math.max(0,last-first+1);
+ if(!Number.isFinite(count)||count>200||!Number.isFinite(min)||!Number.isFinite(max)||!Number.isFinite(max-min)||!(max>min))throw new Error('y_step_count');
+ const ticks=Array.from({length:count},(_,i)=>clean((first+i)*step));
+ if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
+ return {min,max,step,ticks};
 }
 const zoneFormats=new Map();
 function localParts(t,zone){
@@ -2640,10 +2999,18 @@ function periodBounds(t,period,zone='UTC'){
 function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
  if(period==='none')return series;
  const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
- return series.map(s=>{const points=[];let index=0;
+ return series.map(s=>{if(s.source==='statistics')return s;const points=[];let index=0;
   for(const [a,b] of bounds){let cursor=a,total=0,duration=0,min=Infinity,max=-Infinity;
    while(index<s.points.length&&s.points[index].t<=a)index++;
-   let value=index?s.points[index-1].v:null;const fragments=[{t:a,valid:value!==null}];
+   let value=index?s.points[index-1].v:null;
+   if(method==='delta'){
+    const first=value;let valid=Number.isFinite(first);
+    // Recorder holds each reading until the next one. Include an exact end
+    // boundary once as this bin's end and the following bin's start.
+    while(index<s.points.length&&s.points[index].t<=b){value=s.points[index++].v;valid&&=Number.isFinite(value);}
+    points.push({t:a,v:valid?value-first:null});continue;
+   }
+   const fragments=[{t:a,valid:value!==null}];
    while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
    const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
    for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
@@ -2679,8 +3046,13 @@ function historyUrl(config,end) {
 
 // src/localization.js
 const translations={
- title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. All sensors must use the same unit.','Historische periode: 1–8760 uur. Alle sensoren moeten dezelfde eenheid hebben.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
+ title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. Each different unit gets its own Y-axis.','Historische periode: 1–8760 uur. Iedere verschillende eenheid krijgt een eigen Y-as.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
 Object.assign(translations,{
+ show_title:['Show title','Titel tonen'],
+ data_source:['Data source','Gegevensbron'],auto:['Automatic','Automatisch'],history:['Raw history','Ruwe historie'],statistics:['Statistics','Statistics'],
+ data_sourceHelper:['Automatic: statistics beyond 48 hours, raw history otherwise. Unsupported sensors fall back to history. Statistics use hour/day/week/month summaries (None uses hour); minute, quarter-hour and Delta require history.','Automatisch: statistics boven 48 uur, anders ruwe historie. Sensoren zonder ondersteuning vallen terug op historie. Statistics gebruikt uur/dag/week/maand (Geen gebruikt uur); minuut, kwartier en Delta vereisen historie.'],
+ statistics_config:['Statistics requires hour, day, week or month (None uses hour), and minimum, maximum or average. Choose History for minute, quarter-hour or Delta.','Statistics vereist uur, dag, week of maand (Geen gebruikt uur), met minimum, maximum of gemiddelde. Kies Historie voor minuut, kwartier of Delta.'],
+ statistics_unavailable:['Statistics unavailable for a selected sensor or its unit. Choose Automatic or History.','Statistics ontbreekt voor een gekozen sensor of zijn eenheid. Kies Automatisch of Historie.'],
  zoom:['Zoom','Zoom'],zoom_in:['Zoom in','Inzoomen'],zoom_out:['Zoom out','Uitzoomen'],zoom_reset:['Reset zoom','Zoom herstellen'],
  aggregation_period:['Aggregation period','Aggregatieperiode'],aggregation_method:['Aggregation method','Aggregatiemethode'],none:['None (raw history)','Geen (ruwe historie)'],minute:['Minute','Minuut'],quarter_hour:['Quarter hour','Kwartier'],hour:['Hour','Uur'],day:['Day','Dag'],week:['Week (Monday)','Week (maandag)'],month:['Month','Maand'],min:['Minimum','Minimum'],max:['Maximum','Maximum'],avg:['Time-weighted average','Tijdgewogen gemiddelde'],
  aggregation_periodHelper:['Applied separately to every sensor in the Home Assistant timezone. Zoom does not change it.','Per sensor toegepast in de Home Assistant-tijdzone. Zoom verandert dit niet.'],
@@ -2693,9 +3065,15 @@ Object.assign(translations,{
  hover_sync_groupHelper:['Cards with the same group follow each other. Empty uses the default group.','Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'],
  line_interpolation:['Line interpolation','Lijnverloop'],interpolation_smooth:['Smooth','Vloeiend'],interpolation_linear:['Linear','Recht'],interpolation_step:['Stepped','Trapvormig'],
  line_interpolationHelper:['Display only: connects recorded points. Unavailable gaps remain gaps.','Alleen weergave: verbindt geregistreerde punten. Niet-beschikbare waarden blijven gaten.'],
+ y_step_error:['Invalid Y-axis step: enter a finite positive number or leave it empty for automatic steps.','Ongeldige stapgrootte Y-as: voer een eindig positief getal in of laat leeg voor automatische stappen.'],
+ y_step_count:['Y-axis step cannot be drawn (maximum 200 ticks or numeric precision exceeded). Increase the step or narrow the Y-axis bounds.','Stapgrootte Y-as kan niet worden getekend (maximaal 200 maatstreepjes of numerieke precisie overschreden). Vergroot de stap of verklein het Y-asbereik.'],
+ align_zero:['Align zero points','Nulpunten uitlijnen'],
+ align_zeroHelper:['Align zero on negative Y-axes. Explicit first-axis bounds take priority.','Zet de nulpunten van negatieve Y-assen op dezelfde hoogte. Handmatige grenzen van de eerste as gaan voor.'],
+ y_axis:['Y-axis','Y-as'],y_step:['Y-axis step','Stapgrootte Y-as'],
+ y_stepHelper:['Optional positive tick interval in the sensor unit. Empty uses round 1/2/5 steps automatically. Maximum 200 ticks; increase the step or narrow the bounds if exceeded.','Optionele positieve stapgrootte in de sensoreenheid. Leeg kiest automatisch ronde 1/2/5-stappen. Maximaal 200 maatstreepjes; vergroot de stap of verklein het bereik bij overschrijding.'],
  y_min:['Y-axis minimum','Minimum Y-as'],y_max:['Y-axis maximum','Maximum Y-as'],
- y_minHelper:['Optional. Empty scales automatically. Uses the sensor unit.','Optioneel. Leeg schaalt automatisch. Gebruikt de sensoreenheid.'],
- y_maxHelper:['Optional. Empty scales automatically. Must exceed the minimum.','Optioneel. Leeg schaalt automatisch. Moet hoger zijn dan het minimum.'],
+ y_minHelper:['Optional, in the first sensor’s unit. Empty scales automatically. Other units have independent automatic axes.','Optioneel, in de eenheid van de eerste sensor. Leeg schaalt automatisch. Andere eenheden hebben eigen automatische assen.'],
+ y_maxHelper:['Optional, for the first sensor’s unit. Empty scales automatically. Must exceed the minimum.','Optioneel, voor de eenheid van de eerste sensor. Leeg schaalt automatisch. Moet hoger zijn dan het minimum.'],
  appearance:['Line and fill','Lijn en vulling'],line_style:['Line style','Lijnstijl'],line_width:['Line width','Lijndikte'],line_color:['Fixed line color','Vaste lijnkleur'],show_fill:['Fill below line','Vulling onder lijn'],fill_opacity:['Fill opacity','Dekking vulling'],fill_fade:['Fade fill','Vulling vervagen'],show_hover_line:['Show hover guide','Aanwijslijn tonen'],gradient_mode:['Color transitions','Kleurovergang'],gradient_stops:['Color stops','Kleurovergangen'],stop_value:['Sensor value','Sensorwaarde'],stop_color:['Color','Kleur'],solid:['Solid','Doorgetrokken'],dashed:['Dashed','Gestreept'],dotted:['Dotted','Gestippeld'],smooth:['Smooth gradient','Vloeiende gradiënt'],steps:['Hard transitions','Harde overgangen'],
  fill_color:['Fixed fill color','Vaste vulkleur'],fill_colorHelper:['Optional. Empty follows the line color or gradient.','Optioneel. Leeg volgt de lijnkleur of gradiënt.'],
  hours_to_showHelper:translations.hoursHelper,
@@ -2706,6 +3084,7 @@ Object.assign(translations,{
 });
 Object.assign(translations,{
  graph_settings:['Graph','Grafiek'],show_legend:['Show legend','Legenda tonen'],data_processing:['Data processing','Dataverwerking'],series_line:['Line','Lijn'],series_fill:['Fill','Vulling'],
+ visible:['Show by default','Standaard tonen'],visibleHelper:['Initial visibility. Click the sensor in the legend to show or hide it temporarily.','Beginweergave. Klik op de sensor in de legenda om deze tijdelijk te tonen of verbergen.'],show_sensor:['Show','Toon'],hide_sensor:['Hide','Verberg'],no_visible:['All sensors are hidden. Enable a sensor in the legend.','Alle sensoren zijn verborgen. Zet een sensor aan via de legenda.'],
  color_mode:['Line color','Lijnkleur'],color_fixed:['Fixed color','Vaste kleur'],color_gradient:['Color stops','Kleurovergangen'],color:['Line color','Lijnkleur'],
  fill_mode:['Fill color','Vulkleur'],fill_line:['Follow line','Volg lijn'],fill_own:['Own color','Eigen kleur'],
  add_sensor:['Add sensor','Sensor toevoegen'],new_sensor:['New sensor','Nieuwe sensor'],add_sensorHelper:['Add a sensor to configure its name, line and fill.','Voeg een sensor toe om naam, lijn en vulling in te stellen.'],
@@ -2723,7 +3102,13 @@ Object.assign(translations,{
 translations.config=['Invalid configuration: check sensors, hours, Y-axis bounds, appearance and color stops.','Ongeldige configuratie: controleer sensoren, uren, Y-asgrenzen, lijnopties en kleurovergangen.'];
 function language(hass){return String(hass?.locale?.language??hass?.language??'en').toLowerCase().startsWith('nl')?'nl':'en';}
 function text(key,lang){return translations[key]?.[lang==='nl'?1:0]??key;}
-function number(value,lang){return new Intl.NumberFormat(lang==='nl'?'nl-NL':'en-GB',{maximumFractionDigits:2}).format(value);}
+function number(value,lang,axis=false){
+ const small=value!==0&&Math.abs(value)<0.01;
+ return new Intl.NumberFormat(lang==='nl'?'nl-NL':'en-GB',{
+  ...(axis?{maximumSignificantDigits:15}:small?{maximumSignificantDigits:4}:{maximumFractionDigits:2}),
+  ...(value!==0&&(Math.abs(value)<0.0001||axis&&Math.abs(value)>=1e6)?{notation:'scientific'}:{})
+ }).format(Object.is(value,-0)?0:value);
+}
 function time(value,lang,timeZone,full=false){return new Intl.DateTimeFormat(lang==='nl'?'nl-NL':'en-GB',{timeZone,hour:'2-digit',minute:'2-digit',hourCycle:'h23',...(full?{day:'numeric',month:'short'}:{})}).format(new Date(value));}
 function escapeHtml(value){return String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');}
 function frontendHass(){return globalThis.document?.querySelector('home-assistant')?.hass;}
@@ -2762,7 +3147,8 @@ const REFRESH_MS=60000;
 // Native controls, with one independently owned appearance form per sensor.
 class HistoryGraphEditor extends HTMLElement {
  constructor(){super();this.attachShadow({mode:'open'});}
- setConfig(config){this._data=editorConfig(config);this._render();}
+ _editorConfig(config){return editorConfig(config);}
+ setConfig(config){this._data=this._editorConfig(config);this._render();}
  set hass(hass){this._hass=hass;this._render();}
  get hass(){return this._hass;}
  connectedCallback(){this._render();}
@@ -2786,7 +3172,7 @@ class HistoryGraphEditor extends HTMLElement {
     this._data={...this._data,entities:[...this._data.entities,row]};this._openNew=true;this._render();
    };
   }
-  this._bind(this._form,HistoryGraphCard.getConfigForm(),this._data);
+  this._bind(this._form,(this.constructor.cardClass??HistoryGraphCard).getConfigForm(),this._data);
   const lang=language(this._hass),label=key=>text(key,lang),container=this.shadowRoot.querySelector('.sensors');
   this.shadowRoot.querySelector('.sensors-heading').textContent=label('entities');
   this.shadowRoot.querySelector('.empty').textContent=this._data.entities.length?'':label('add_sensorHelper');
@@ -2816,7 +3202,7 @@ class HistoryGraphEditor extends HTMLElement {
    const cssColor=c=>Array.isArray(c)?`rgb(${c.join(',')})`:c;
    entry.querySelector('.swatch').style.background=row.color_mode==='gradient'&&row.gradient_stops.length?`linear-gradient(to right,${row.gradient_stops.map(s=>cssColor(s.color)).join(',')})`:cssColor(row.color);
    for(const key of ['up','down','remove']){const button=entry.querySelector('.'+key);button.textContent=label('sensor_'+key);button.setAttribute('aria-label',`${label('sensor_'+key)}: ${name}`);button.disabled=key==='up'?index===0:key==='down'?index===this._data.entities.length-1:false;}
-   this._bind(entry.querySelector('ha-form'),HistoryGraphCard.getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
+   this._bind(entry.querySelector('ha-form'),(this.constructor.cardClass??HistoryGraphCard).getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
   });
   this._openNew=false;
  }
@@ -2840,17 +3226,23 @@ class HistoryGraphCard extends HTMLElement {
   const select=keys=>({select:{mode:'dropdown',get options(){return keys.map(value=>({value,label:label(value)}));}}});
   return this._formContract([
    {name:'title',selector:{text:{}}},
+   {name:'show_title',default:true,selector:{boolean:{}}},
    {name:'hours_to_show',selector:{number:{min:1,max:8760,step:0.5,mode:'box'}}},
    {type:'expandable',name:'graph_settings',get title(){return label('graph_settings');},flatten:true,schema:[
     {name:'graph_mode',default:'lines',selector:select(['lines','stacked'])},
     {name:'show_legend',default:true,selector:{boolean:{}}},
     {name:'show_hover_line',default:true,selector:{boolean:{}}},
     {name:'sync_hover',default:true,selector:{boolean:{}}},
-    {name:'hover_sync_group',selector:{text:{}}},
+    {name:'hover_sync_group',selector:{text:{}}}
+   ]},
+   {type:'expandable',name:'y_axis',get title(){return label('y_axis');},flatten:true,schema:[
     {name:'y_min',selector:{number:{step:'any',mode:'box'}}},
-    {name:'y_max',selector:{number:{step:'any',mode:'box'}}}
+    {name:'y_max',selector:{number:{step:'any',mode:'box'}}},
+    {name:'y_step',selector:{number:{step:'any',mode:'box'}}},
+    {name:'align_zero',default:true,selector:{boolean:{}}}
    ]},
    {type:'expandable',name:'data_processing',get title(){return label('data_processing');},flatten:true,schema:[
+    {name:'data_source',default:'auto',selector:select(['auto','history','statistics'])},
     {name:'aggregation_period',default:'none',selector:select(['none','minute','quarter_hour','hour','day','week','month'])},
     {name:'aggregation_method',default:'avg',selector:select(['min','max','avg'])}
    ]}
@@ -2865,6 +3257,7 @@ class HistoryGraphCard extends HTMLElement {
   return this._formContract([
    {name:'entity',required:true,selector:{entity:{domain:'sensor'}}},
    {name:'name',selector:{text:{}}},
+   {name:'visible',default:true,selector:{boolean:{}}},
    {type:'expandable',name:'series_line',get title(){return label('series_line');},flatten:true,expanded:true,schema:[
     ...(rows.filter(s=>s.entity).length>1?[{name:'line_style_source',selector:sourceSelector}]:[]),
     ...(!row.line_style_source?[
@@ -2902,7 +3295,9 @@ class HistoryGraphCard extends HTMLElement {
  _gradient(min,max,y){
   const c=this._config;
   const gradients=c.entities.map((_,index)=>{
+   if(!this._isSeriesVisible(index))return '';
    const {stops,mode}=this._seriesAppearance(index);if(!stops.length)return '';
+   if(this._axes){({min,max}=this._axes[this._seriesAxes[index]]);y=v=>(max-v)/(max-min)*300;}
    const values=[max,...stops.map(s=>s.value).filter(v=>v>min&&v<max).reverse(),min];
    const markup=values.map((v,i)=>{const offset=y(v)/3;const high=gradientColor(stops,v,mode);const low=mode==='steps'&&i>0&&i<values.length-1?gradientColor(stops,v-Math.max(1,Math.abs(v))*Number.EPSILON*4,mode):high;return `<stop offset="${offset}%" stop-color="${high}"/>${low!==high?`<stop offset="${offset}%" stop-color="${low}"/>`:''}`;}).join('');
    return `<linearGradient id="history-colors-${index}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="300">${markup}</linearGradient>`;
@@ -2927,7 +3322,16 @@ class HistoryGraphCard extends HTMLElement {
  static getStubConfig(hass){const ids=Object.keys(hass?.states??{}).filter(id=>id.startsWith('sensor.')&&Number.isFinite(Number(hass.states[id].state))&&hass.states[id].state!=='');return {entities:ids.slice(0,1),hours_to_show:24};}
  getGridOptions(){return {rows:6,columns:12,min_rows:4,min_columns:6};}
  getCardSize(){return 6;}
- setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
+ _isSeriesVisible(index){const id=this._config.entities[index];return this._visibility?.get(id)??(this._config.series_options.find(s=>s.entity===id)?.visible??true);}
+ _toggleSeries(id){
+  const index=this._config.entities.indexOf(id);if(index<0)return;
+  this._visibility??=new Map();this._visibility.set(id,!this._isSeriesVisible(index));this._hideTooltip();this._render();
+  queueMicrotask(()=>this.shadowRoot.querySelector?.(`button[data-series="${id}"]`)?.focus({preventScroll:true}));
+ }
+ setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message==='y_step'?'y_step_error':error.message==='y_step_count'?'y_step_count':error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}
+  const previous=this._config,visibility=this._visibility;
+  this._visibility=new Map(validated.entities.map(id=>{const initial=validated.series_options.find(s=>s.entity===id)?.visible??true,old=previous?.series_options.find(s=>s.entity===id)?.visible??true;return [id,initial===old&&visibility?.has(id)?visibility.get(id):initial];}));
+  SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(hass){this._hass=hass;if(!this._config)return;let signature;try{const meta=seriesMetadata(hass,this._config.entities);signature=JSON.stringify([meta,language(hass),hass.config?.time_zone]);}catch(e){signature=e.message;}
   if(signature!==this._signature){this._signature=signature;this._render();}
   if(this._connected&&!this._started)this._refresh();
@@ -2952,49 +3356,61 @@ class HistoryGraphCard extends HTMLElement {
   this._status='loading';this._render();let timeout;
   try{
    seriesMetadata(hass,config.entities);
-   const response=await Promise.race([hass.callApi('GET',historyUrl(config,end)),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
+   const response=await Promise.race([loadHistorySeries(hass,config,start,end),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
    if(generation!==this._generation||!this._connected)return;
    seriesMetadata(this._hass,config.entities);
-   this._series=decodeHistory(response,config.entities,start,end);this._rawSeries=this._series;this._start=start;this._end=end;
+   this._series=response;this._rawSeries=this._series;this._start=start;this._end=end;
    this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';
-  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit'].includes(e.message)?e.message:'error';this._series=[];}
+  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
   finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),REFRESH_MS);this._timer.unref?.();}}
  }
+ _getGraphAxes(series,meta,visible){return graphAxes(series,meta,this._config,this._start,this._end,visible);}
  _render(){
   if(!this._config)return;const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
   let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
   const title=this._config.title??text('title',lang);let content='';
-  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
+  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
   else{
    this._rawSeries??=this._series;
    const key=JSON.stringify([this._start,this._end,this._zone,this._config.aggregation_period,this._config.aggregation_method]);
    if(this._processedRaw!==this._rawSeries||this._processedKey!==key){this._series=aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);this._processedRaw=this._rawSeries;this._processedKey=key;}
-   if(this._plotSource!==this._series||this._plotMode!==this._config.graph_mode){this._plotSeries=this._config.graph_mode==='stacked'?stackSeries(this._series,this._start,this._end):this._series;this._plotSource=this._series;this._plotMode=this._config.graph_mode;}
-   this._meta=meta;const [min,max]=yRange(this._plotSeries,this._config);this._range=[min,max];
+   const visible=this._config.entities.map((_,i)=>this._isSeriesVisible(i)),anyVisible=visible.some(Boolean);
+   const axisKey=JSON.stringify([meta.items.map(item=>item.unit),this._config.graph_mode,this._config.y_min,this._config.y_max,this._config.y_step,this._config.align_zero,visible]);
+   let grouped;try{if(this._axisSource!==this._series||this._axisKey!==axisKey){this._axisGroups=this._getGraphAxes(this._series,meta,visible);this._axisSource=this._series;this._axisKey=axisKey;}grouped=this._axisGroups;}catch(error){if(!['y_step','y_step_count'].includes(error.message))throw error;this._status=error.message==='y_step'?'y_step_error':error.message;this._range=null;this._render();return;}
+   this._meta=meta;this._axes=grouped.axes;this._seriesAxes=grouped.seriesAxes;this._plotSeries=grouped.plotSeries;
+   const {min,max}=this._axes[0];this._range=[min,max];
+   const extra=this._axes.length-1,mixed=new Set(meta.items.map(item=>item.unit)).size>1;
    this._viewStart=Math.max(this._start,this._viewport?.[0]??this._start);this._viewEnd=Math.min(this._end,this._viewport?.[1]??this._end);
    if(this._viewEnd<=this._viewStart){this._viewport=null;this._viewStart=this._start;this._viewEnd=this._end;}
    const x=t=>(t-this._viewStart)/(this._viewEnd-this._viewStart)*1000,y=v=>(max-v)/(max-min)*300;
-   const axes=Array.from({length:5},(_,i)=>{const ratio=i/4;return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px)">${escapeHtml(number(max-(max-min)*ratio,lang))}</span>`;}).join('');
-   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" style="left:calc(${i/3*100}% + ${44-i/3*56}px)">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
+   const axes=this._axes.map((axis,index)=>{
+    const position=index?`left:auto;right:calc(12px + ${index-1} * var(--axis-column));width:var(--axis-column);max-width:var(--axis-column);text-align:right;`:'';
+    const unit=mixed?`<span class="axis-unit" style="${position}">${escapeHtml(axis.unit||'—')}</span>`:'';
+    return unit+[...axis.ticks].reverse().map(value=>{const ratio=(axis.max-value)/(axis.max-axis.min);return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px);${position}">${escapeHtml(number(value,lang,true))}</span>`;}).join('');
+   }).join('');
+   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
 
    const display=this._plotSeries.map(s=>({...s,points:displayPoints(s.points,this._viewStart,this._viewEnd)}));
+   const seriesY=i=>{const a=this._axes[this._seriesAxes[i]];return v=>(a.max-v)/(a.max-a.min)*300;};
    this._graph??=new SharedGraph();
    const graph=this._graph.render(this,{
     viewBox:'0 0 1000 300',defs:this._gradient(min,max,y),
-    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,y,i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
-    lines:display.map((s,i)=>({d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,y,i),className:'series-line',entity:s.id,appearance:this._appearance(i)})),
+    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!visible[i]||!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,seriesY(i),i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
+    lines:display.flatMap((s,i)=>visible[i]?[{d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,seriesY(i),i),className:'series-line',entity:s.id,appearance:this._appearance(i)}]:[]),
    });
-   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<span class="legend-item"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}</strong></span>`;}).join('');
-   const missing=meta.items.filter((_,i)=>!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
-   content=`${this._config.show_legend?`<div class="legend">${legend}<span class="unit">${escapeHtml(meta.unit)}</span></div>`:`<div class="data-status">${escapeHtml(meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" tabindex="0" role="group" aria-label="${text('chart',lang)}">${axes}${times}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
+   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
+   const missing=meta.items.filter((_,i)=>visible[i]&&!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
+   content=`${this._config.show_legend?`<div class="legend">${legend}${mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`}</div>`:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
   }
-  const controls=this._status==='ready'?`<div class="zoom-controls" role="group" aria-label="${text('zoom',lang)}">${[['in','+'],['out','−'],['reset','↺']].map(([action,label])=>`<button data-zoom="${action}" title="${text('zoom_'+action,lang)}" aria-label="${text('zoom_'+action,lang)}">${label}</button>`).join('')}</div>`:'';
-  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${title?`<header><h2>${escapeHtml(title)}</h2></header>`:''}${controls}${content}</div></ha-card>`;
+  const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang});
+  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${controls}${content}</div></ha-card>`;
+  this.shadowRoot.querySelectorAll?.('[data-series]').forEach(button=>button.onclick=()=>this._toggleSeries(button.dataset.series));
   this.shadowRoot.querySelectorAll?.('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:0.5,out:2,reset:0}[button.dataset.zoom]));
   this._graph?.restore(this);
   const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this._pinned=false;this._bindInteractions();
   this._syncElf();SharedGraph.restoreHover(this);
  }
+ _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-this._config.hours_to_show*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
  _zoom(factor){
   this._hideTooltip();if(!factor)this._viewport=null;
   else{const a=this._viewStart??this._start,b=this._viewEnd??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2;
@@ -3014,7 +3430,7 @@ class HistoryGraphCard extends HTMLElement {
    if(e.key==='Escape'){this._hideTooltip();return;}
    if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();
    const a=this._viewStart??this._start,b=this._viewEnd??this._end;
-   const timeline=[...new Set([a,...this._series.flatMap(s=>s.points.map(p=>p.t)).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
+   const timeline=[...new Set([a,...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t):[]).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
    let index=timeline.findIndex(t=>t>=(this._cursor??this._start));if(index<0)index=timeline.length-1;
    if(e.key==='Home')index=0;else if(e.key==='End')index=timeline.length-1;else index=Math.max(0,Math.min(timeline.length-1,index+(e.key==='ArrowRight'?1:-1)));
    this._pinned=true;this._showTooltip(timeline[index]);
@@ -3023,12 +3439,15 @@ class HistoryGraphCard extends HTMLElement {
  _receiveHover(timestamp){if(timestamp===null||timestamp<(this._viewStart??this._start)||timestamp>(this._viewEnd??this._end)){this._hideTooltip(false);return;}this._showTooltip(timestamp,false);}
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._cursor=null;this._pinned=false;const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;const tooltip=chart.querySelector('.tooltip');if(tooltip)tooltip.hidden=true;const markers=chart.querySelector('.markers');if(markers)markers.innerHTML='';const guide=chart.querySelector('.guide');if(guide)guide.hidden=true;}
  _showTooltip(timestamp,publish=true){
+  if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;this._cursor=timestamp;
   const tooltip=chart.querySelector('.tooltip'),plot=chart.querySelector('.plot');const box=chart.getBoundingClientRect(),p=plot.getBoundingClientRect();
   const px=p.left-box.left+(timestamp-(this._viewStart??this._start))/((this._viewEnd??this._end)-(this._viewStart??this._start))*p.width;
-  const [min,max]=this._range;const positions=[];
-  const rows=this._series.map((s,i)=>{const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return `${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.unit}`}`;});
-  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map(row=>`<span>${escapeHtml(row)}</span>`).join('')}`;tooltip.hidden=false;
+  const positions=[];
+  const rows=this._series.flatMap((s,i)=>{if(!this._isSeriesVisible(i))return [];const {min,max}=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return [`${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.items[i].unit??this._meta.unit}`}`];});
+  if(!rows.length){this._hideTooltip(publish);return;}
+  const colors=this._series.flatMap((s,i)=>this._isSeriesVisible(i)?[this._appearance(i,valueAt(s.points,timestamp)).color]:[]);
+  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map((row,i)=>`<span><i style="background:${escapeHtml(colors[i])}"></i><b>${escapeHtml(row)}</b></span>`).join('')}`;tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';
   tooltip.style.maxHeight=`${Math.max(0,box.height-8)}px`;
   const measured=tooltip.getBoundingClientRect();let left=Math.max(4,Math.min(box.width-measured.width-4,px+14));
   if(px+14+measured.width>box.width-4)left=Math.max(4,px-measured.width-14);
@@ -3041,37 +3460,61 @@ class HistoryGraphCard extends HTMLElement {
   if(publish)SharedGraph.publishHover(this,timestamp);
  }
  _styles(){return `
- :host{display:block;height:100%;min-width:0;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
+ :host{display:block;height:100%;min-width:0;container-type:inline-size;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
  ha-card{height:100%;display:flex;flex-direction:column;background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,inherit)}
  .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;padding:16px 16px 12px;line-height:1.4}
- h2{margin:0;font-size:var(--font-size-title);line-height:1.25;font-weight:650;letter-spacing:-.01em}
- header{padding-right:106px}.zoom-controls{position:absolute;right:12px;top:10px;display:flex;gap:2px}.zoom-controls button{width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color);font:20px inherit;cursor:pointer}.zoom-controls button:hover,.zoom-controls button:focus-visible{background:var(--secondary-background-color);outline:1px solid var(--divider-color)}
- .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:12px 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
- .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+ ${cardHeaderStyles()}
+ .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:0 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
+ .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;border:0;padding:4px 0;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer;border-radius:4px}.legend-item[aria-pressed="false"]{opacity:.45}.legend-item[aria-pressed="false"]>span{text-decoration:line-through}.legend-item:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}.empty-visibility{position:absolute;inset:22px 12px 30px 44px;display:flex;align-items:center;justify-content:center;color:var(--secondary-text-color);font-size:12px;text-align:center;pointer-events:none}
  .legend i{width:15px;flex-shrink:0;border-top:3px solid var(--series-color)}.unit{margin-left:auto;font-weight:600}
  .data-status{font-size:11px;color:var(--secondary-text-color);margin-top:3px}
  .chart{position:relative;flex:1;min-height:120px;height:260px;margin-top:4px;outline:none;touch-action:pan-y}
  .chart:focus-visible{box-shadow:inset 0 0 0 2px var(--primary-color);border-radius:8px}
- .plot{position:absolute;left:44px;right:12px;top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
+ .plot{position:absolute;left:44px;right:calc(12px + var(--axes-right,0px));top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
  .axis-y,.axis-x{position:absolute;color:var(--secondary-text-color);font-size:11px;line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}.axis-y{left:0;transform:translateY(-50%);max-width:40px;overflow:hidden;text-overflow:ellipsis}.axis-x{bottom:4px;transform:translateX(-50%)}.axis-x:last-of-type{transform:translateX(-100%)}
- .tooltip{overflow-y:auto;position:absolute;z-index:3;padding:9px 11px;border:1px solid var(--divider-color);border-radius:8px;background:var(--card-background-color);box-shadow:0 5px 16px #0003;pointer-events:auto;font-size:12px;font-variant-numeric:tabular-nums;box-sizing:border-box;max-width:calc(100% - 8px)}.tooltip strong,.tooltip span{display:block}.tooltip span{overflow-wrap:anywhere}.tooltip strong{margin-bottom:4px}.tooltip[hidden]{display:none}
+ .axis-unit{position:absolute;left:0;top:2px;max-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color);font-size:10px;font-weight:600}
+ ${SharedGraph.tooltipStyles()}
  .state{display:flex;flex:1;height:260px;flex-direction:column;justify-content:center;align-items:flex-start;gap:8px;min-height:120px;font-size:14px;color:var(--secondary-text-color)}.retry{font:inherit;border:1px solid var(--divider-color);border-radius:6px;background:var(--secondary-background-color);color:var(--primary-text-color);min-height:44px;padding:0 12px;cursor:pointer}
  .guide{position:absolute;top:22px;bottom:30px;border-left:1px dashed var(--secondary-text-color);pointer-events:none}.guide[hidden]{display:none}
  .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none}.zoom-selection[hidden]{display:none}
  .sr-only{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
  ${elevenStyles()}
  ${graphStyles()}
+ @container(max-width:480px){.axis-x[data-tick="1"],.axis-x[data-tick="2"]{display:none}}
  @media(max-width:480px){.card-content{padding:12px 12px 10px}}
  `;}
 }
 if(!customElements.get('eleven-history-graph-card'))customElements.define('eleven-history-graph-card',HistoryGraphCard);
 window.customCards=window.customCards??[];
-if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))window.customCards.push({type:'eleven-history-graph-card',name:'Eleven History Graph Card',get description(){return language(frontendHass())==='nl'?'Historie van sensoren met dezelfde eenheid':'History of sensors sharing one unit';}});
+if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))window.customCards.push({type:'eleven-history-graph-card',name:'Eleven History Graph Card',get description(){return language(frontendHass())==='nl'?'Sensorhistorie met een eigen y-as per eenheid':'Sensor history with an independent y-axis per unit';}});
 
 })();
 
 ;
 (()=>{
+// Shared markup stays in each card's shadow root: native links and existing
+// data-zoom handlers work without cross-bundle custom-element registration.
+const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function cardHeaderIcon(name){
+ const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',history:'m9 6 6 6-6 6'};
+ return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
+}
+function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en'}){
+ const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Geschiedenis']:['Zoom in','Zoom out','Reset zoom','History'];
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['in','out','reset'].map((action,i)=>`<button type="button" data-zoom="${action}" title="${label[i]}" aria-label="${label[i]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${zoom}<a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a></div></header>`;
+}
+function cardHeaderStyles(){return `
+.card-header{display:flex;align-items:flex-start;gap:8px;min-height:32px;flex:none;margin:-6px -4px 12px 0}
+.card-header h2{flex:1;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.header-actions{display:flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto}
+.zoom-controls{display:flex;gap:2px}
+.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);text-decoration:none;cursor:pointer}
+.header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
+.header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.header-actions svg,.period-controls button svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+`;}
+
 // Domain-neutral SVG renderer. Adapters own data, geometry, colors and annotations.
 function graphLineStyle(style, width = 3.5) {
   return {style, width, dash: style === 'dashed' ? '8 7' : style === 'dotted' ? '1 7' : 'none', cap: style === 'dashed' ? 'butt' : 'round'};
@@ -3094,6 +3537,36 @@ class SharedGraph {
       if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
     };
     window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
   }
   static publishHover(host, timestamp) {
     const group = this.hoverGroup(host);
@@ -3120,6 +3593,10 @@ class SharedGraph {
   static disconnectHover(host) {
     this.clearHover(host);
     if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
     host._sharedHoverListener = null;
     host._receiveSharedHover = null;
   }
@@ -3191,6 +3668,7 @@ function segments(rows,start,end){
 
 const escapeTimeline=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const TimelineView={
+ _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-(this._periodHours??this._config.hours_to_show)*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;},
  _setPeriod(hours){if(!Number.isFinite(hours)||hours<1||hours>8760)return;this._periodHours=hours;return this._reloadPeriod();},
  _navigate(direction){const now=Date.now();this._periodEnd=direction===0?null:Math.min(now,(this._periodEnd??this._end??now)+direction*(this._periodHours??this._config.hours_to_show)*3600000);if(this._periodEnd===now)this._periodEnd=null;return this._reloadPeriod();},
  _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._render();return this._refresh();},
@@ -3208,6 +3686,7 @@ const TimelineView={
  _receiveHover(t){if(t===null||!Number.isFinite(t)||t<this._viewStart||t>this._viewEnd){this._hideTooltip(false);return;}this._showTooltip(t,false);},
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._pointerFocusPending=null;this._cursor=null;this._pinned=false;for(const cls of ['tooltip','guide']){const el=this.shadowRoot.querySelector('.'+cls);if(el)el.hidden=true;}},
  _showTooltip(t,publish=true){
+  if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart'),tooltip=chart?.querySelector('.tooltip'),guide=chart?.querySelector('.guide');if(!tooltip)return;
   this._cursor=t;const nl=this._nl(),a=this._viewStart,b=this._viewEnd,esc=escapeTimeline;
   tooltip.innerHTML=`<strong>${esc(this._time(t))}</strong>`+this._config.entities.map((id,i)=>{if(this._stateLimits?.[i])return '';const s=(this._series[i]??[]).find(s=>s.start<=t&&(t<s.end||(t===b&&s.end===b)));if(!s)return `<span>${esc(this._name(id))}: ${nl?'Geen geschiedenis':'No history'}</span>`;const v=this._segmentAppearance(s,id);return `<span><i style="background:${v.color}"></i><b>${esc(this._name(id))}: ${esc(v.label)}</b><small>${esc(this._time(s.start))} – ${esc(this._time(s.end))} · ${esc(this._duration(s.end-s.start))}</small></span>`;}).join('');
@@ -3229,21 +3708,20 @@ const TimelineView={
   chart.onfocusout=e=>{if(!chart.contains(e.relatedTarget))this._hideTooltip();};this.shadowRoot.querySelectorAll('.segment').forEach(button=>{button.onfocus=()=>{const fromPointer=this._pointerFocusPending===button;this._pointerFocusPending=null;if(fromPointer&&this._cursor!=null)return;this._pinned=true;this._showTooltip(Number(button.dataset.time));};});
  },
  _render(){
-  if(!this._config)return;const c=this._config,nl=this._nl(),esc=escapeTimeline;this._viewStart=this._viewport?.[0]??this._start;this._viewEnd=this._viewport?.[1]??this._end;const a=this._viewStart,b=this._viewEnd;let body='',controls='';
+  if(!this._config)return;const c=this._config,nl=this._nl(),esc=escapeTimeline;this._viewStart=this._viewport?.[0]??this._start;this._viewEnd=this._viewport?.[1]??this._end;const a=this._viewStart,b=this._viewEnd;let body='';const controls=cardHeader({title:c.title??(nl?'Statustijdlijn':'Status timeline'),showTitle:c.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:nl?'nl':'en'});
   if(this._status!=='ready')body=`<div class="message" role="status">${this._status==='error'?(nl?'Geschiedenis kon niet worden geladen.':'Unable to load history.'):(nl?'Geschiedenis laden…':'Loading history…')}${this._status==='error'?`<button class="retry">${nl?'Opnieuw proberen':'Retry'}</button>`:''}</div>`;
   else{
-   controls=`<div class="zoom-controls" role="group" aria-label="Zoom">${[['in','+',nl?'Inzoomen':'Zoom in'],['out','−',nl?'Uitzoomen':'Zoom out'],['reset','↺',nl?'Zoom herstellen':'Reset zoom']].map(([action,label,title])=>`<button data-zoom="${action}" title="${title}" aria-label="${title}">${label}</button>`).join('')}</div>`;
-   const legend=new Map(),rows=c.entities.map((id,i)=>{const name=this._name(id);if(this._stateLimits?.[i])return `<div class="row"><div class="row-label">${esc(name)}</div><div class="state-limit" role="status">${esc(this._stateLimitMessage())}</div></div>`;const bars=(this._series[i]??[]).filter(s=>s.end>a&&s.start<b).map(s=>{const v=this._segmentAppearance(s,id);legend.set(v.label+'|'+v.color,v);const start=Math.max(a,s.start),end=Math.min(b,s.end),description=`${name}: ${v.label}, ${this._time(s.start)} – ${this._time(s.end)} · ${this._duration(s.end-s.start)}`;return `<button class="segment ${['unknown','unavailable'].includes(s.state)?'gap':''}" style="left:${(start-a)/(b-a)*100}%;width:${(end-start)/(b-a)*100}%;background-color:${v.color}" aria-label="${esc(description)}" data-time="${start}">${c.show_state_labels?`<span>${esc(v.label)}</span>`:''}</button>`;}).join('');return `<div class="row">${c.show_labels?`<div class="row-label">${esc(name)}</div>`:''}<div class="track">${bars}</div>${c.show_summary?`<div class="summary">${esc(this._summary(i))}</div>`:''}</div>`;}).join('');
+
+   const legend=new Map(),rows=c.entities.map((id,i)=>{const name=this._name(id);if(this._stateLimits?.[i])return `<div class="row"><div class="row-label">${esc(name)}</div><div class="state-limit" role="status">${esc(this._stateLimitMessage())}</div></div>`;const bars=(this._series[i]??[]).filter(s=>s.end>a&&s.start<b).map(s=>{const v=this._segmentAppearance(s,id);legend.set(v.label+'|'+v.color,v);const start=Math.max(a,s.start),end=Math.min(b,s.end),description=`${name}: ${v.label}, ${this._time(s.start)} – ${this._time(s.end)} · ${this._duration(s.end-s.start)}`;return `<button class="segment ${['unknown','unavailable'].includes(s.state)?'gap':''}" style="left:${(start-a)/(b-a)*100}%;width:${(end-start)/(b-a)*100}%;background-color:${v.color};color:${v.textColor??'inherit'}" aria-label="${esc(description)}" data-time="${start}">${c.show_state_labels?`<span>${esc(v.label)}</span>`:''}</button>`;}).join('');return `<div class="row">${c.show_labels?`<div class="row-label">${esc(name)}</div>`:''}<div class="track">${bars}</div>${c.show_summary?`<div class="summary">${esc(this._summary(i))}</div>`:''}</div>`;}).join('');
    body=`<div class="chart" tabindex="0" role="group" aria-label="${nl?'Statustijdlijn':'Status timeline'}">${c.show_grid!==false?this._ticks().map(r=>`<div class="grid-line" style="left:${r*100}%"></div>`).join(''):''}${rows}<div class="guide" hidden></div><div class="zoom-selection" hidden></div><div class="tooltip" role="status" hidden></div></div>`;
    if(c.show_axis)body+=`<div class="axis">${this._ticks().map(r=>`<span>${esc(this._time(a+(b-a)*r))}</span>`).join('')}</div>`;
    if(c.show_legend)body+=`<div class="legend">${[...legend.values()].map(v=>`<span><i style="background:${v.color}"></i>${esc(v.label)}</span>`).join('')}</div>`;
   }
-  const hours=this._periodHours??c.hours_to_show,choices=[...new Set([6,24,168,hours])].sort((a,b)=>a-b),navigation=c.show_navigation===false?'':`<div class="period-controls"><button data-period="previous" aria-label="${nl?'Vorige periode':'Previous period'}">‹</button><select aria-label="${nl?'Periode':'Period'}">${choices.map(h=>`<option value="${h}" ${h===hours?'selected':''}>${h===168?(nl?'7 dagen':'7 days'):`${h} ${nl?'uur':'hours'}`}</option>`).join('')}</select><button data-period="next" aria-label="${nl?'Volgende periode':'Next period'}" ${this._periodEnd==null?'disabled':''}>›</button><button data-period="now">${nl?'Nu':'Now'}</button></div>`;
+  const hours=this._periodHours??c.hours_to_show,choices=[...new Set([6,24,168,hours])].sort((a,b)=>a-b),navigation=c.show_navigation===false?'':`<div class="period-controls"><button data-period="previous" aria-label="${nl?'Vorige periode':'Previous period'}">${cardHeaderIcon('previous')}</button><select aria-label="${nl?'Periode':'Period'}">${choices.map(h=>`<option value="${h}" ${h===hours?'selected':''}>${h===168?(nl?'7 dagen':'7 days'):`${h} ${nl?'uur':'hours'}`}</option>`).join('')}</select><button data-period="next" aria-label="${nl?'Volgende periode':'Next period'}" ${this._periodEnd==null?'disabled':''}>${cardHeaderIcon('next')}</button><button data-period="now">${nl?'Nu':'Now'}</button></div>`;
   this.shadowRoot.innerHTML=`<style>:host{display:block;min-width:0}ha-card{display:block;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b);font-family:inherit;height:100%}
-.content{padding:16px;box-sizing:border-box;position:relative}h2{margin:0 0 18px;padding-right:100px;font-size:18px;font-weight:650;line-height:1.25;letter-spacing:-.01em;overflow-wrap:anywhere}
-.zoom-controls{position:absolute;right:12px;top:10px;display:flex;gap:2px}
-.zoom-controls button{width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);font-size:20px;cursor:pointer}
-.zoom-controls button:hover,.zoom-controls button:focus-visible{background:var(--secondary-background-color,#eee);outline:1px solid var(--divider-color)}
+.content{padding:16px 16px 12px;box-sizing:border-box;position:relative}
+${cardHeaderStyles()}
+@media(max-width:480px){.content{padding:12px 12px 10px}}
 .period-controls{display:flex;align-items:center;gap:4px;margin:0 0 7px}
 .period-range{font-size:11px;color:var(--secondary-text-color,#666);margin-bottom:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .period-controls button,.period-controls select{font:inherit;font-size:12px;min-height:32px;border:1px solid var(--divider-color,#ddd);border-radius:5px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));padding:4px 10px;cursor:pointer}
@@ -3268,14 +3746,10 @@ const TimelineView={
 .legend i,.tooltip i{width:9px;height:9px;border-radius:3px;flex-shrink:0}
 .guide{position:absolute;top:0;bottom:0;border-left:1px solid var(--primary-text-color,#20252b);opacity:.6;pointer-events:none;z-index:2}
 .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none;z-index:3}
-.tooltip{position:absolute;z-index:4;box-sizing:border-box;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;overflow:auto;overflow-wrap:anywhere;pointer-events:none}
-.tooltip strong{display:block;margin-bottom:4px}
-.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px}
-.tooltip i{margin-top:4px}
-.tooltip small{grid-column:2;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums}
+${SharedGraph.tooltipStyles()}
 .state-limit{font-size:12px;color:var(--error-color,#db4437);overflow-wrap:anywhere;position:relative}
 .message{font-size:14px;color:var(--secondary-text-color,#666);min-height:60px}
-.retry{display:block;margin-top:12px;min-height:44px;background:transparent;color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:6px;padding:8px 12px}[hidden]{display:none}</style><ha-card><div class="content"><h2>${esc(c.title??(nl?'Statustijdlijn':'Status timeline'))}</h2>${controls}${navigation}${c.show_navigation!==false&&this._status==='ready'?`<div class="period-range">${esc(this._time(a,true))} – ${esc(this._time(b,true))}</div>`:''}${body}</div></ha-card>`;
+.retry{display:block;margin-top:12px;min-height:44px;background:transparent;color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:6px;padding:8px 12px}[hidden]{display:none}</style><ha-card><div class="content">${controls}${navigation}${c.show_navigation!==false&&this._status==='ready'?`<div class="period-range">${esc(this._time(a,true))} – ${esc(this._time(b,true))}</div>`:''}${body}</div></ha-card>`;
   const nav=this.shadowRoot.querySelector('.period-controls');if(nav){nav.querySelector('select').onchange=e=>this._setPeriod(Number(e.target.value));for(const [key,direction] of [['previous',-1],['next',1],['now',0]])nav.querySelector(`[data-period="${key}"]`).onclick=()=>this._navigate(direction);}
   const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this.shadowRoot.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:.5,out:2,reset:0}[button.dataset.zoom]));this._bindInteractions();const renderedChart=this.shadowRoot.querySelector('.chart'),restoreTooltip=()=>{if(this.shadowRoot.querySelector('.chart')===renderedChart){SharedGraph.restoreHover(this);if(this._cursor!=null)this._showTooltip(this._cursor,false);}};const ready=this.shadowRoot.querySelector('ha-card')?.updateComplete;if(ready?.then)ready.then(restoreTooltip);else restoreTooltip();
  }
@@ -3287,9 +3761,10 @@ const helpers={entities:'Elke entiteit krijgt één balk, in de gekozen volgorde
 function color(v,fallback='#607d94'){if(Array.isArray(v)&&v.length===3&&v.every(n=>Number.isFinite(n)&&n>=0&&n<=255))return `rgb(${v.join(',')})`;return typeof v==='string'&&/^(#[\da-f]{3,8}|[a-z]+|var\(--[\w-]+\))$/i.test(v)?v:fallback;}
 Object.assign(labels,{entity:'Entiteit',name:'Weergavenaam (optioneel)',state_colors:'Statusregels',timeline_settings:'Tijdlijn',status_settings:'Algemene statusregels',bar_settings:'Balkopmaak'});
 Object.assign(helpers,{state_colors:'Gebruik de echte statuswaarde, bijvoorbeeld on, off, home of not_home. Eigen regels gaan voor algemene regels. Dubbele statuswaarden zijn niet toegestaan.',status_settings:'Deze regels gelden voor alle entiteiten, tenzij de entiteit een eigen regel voor dezelfde status heeft.'});
-Object.assign(labels,{sync_hover:'Hover synchroniseren',hover_sync_group:'Hover-synchronisatiegroep'});
+Object.assign(labels,{show_title:'Titel tonen',sync_hover:'Hover synchroniseren',hover_sync_group:'Hover-synchronisatiegroep'});
 Object.assign(helpers,{sync_hover:'Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.',hover_sync_group:'Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'});
 const timelineEnglish={
+ 'Titel tonen':'Show title',
  'Hover synchroniseren':'Synchronize hover','Hover-synchronisatiegroep':'Hover synchronization group',
  'Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.':'Shares the selected time with other Eleven graphs on this page.',
  'Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.':'Cards with the same group follow each other. Empty uses the default group.',
@@ -3353,7 +3828,7 @@ class TimelineCard extends HTMLElement{
  static getStubConfig(hass){return {entities:Object.keys(hass?.states??{}).filter(id=>/^(binary_sensor|person|input_boolean|switch)\./.test(id)).slice(0,1),hours_to_show:24};}
  static editorConfig(c={}){
   const clone=v=>Array.isArray(v)?v.map(clone):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,clone(x)])):v;
-  const data=clone({hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c});
+  const data=clone({hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_title:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c});
   const ids=data.entities??[];
   data._orphan_colors=data.state_colors.filter(r=>r.entity&&!ids.includes(r.entity));
   data._orphan_options=data.series_options.filter(r=>!ids.includes(r.entity));
@@ -3383,7 +3858,7 @@ class TimelineCard extends HTMLElement{
   return this._form([
    group('timeline_settings','Tijdlijn',[
     {name:'title',selector:{text:{}}},num('hours_to_show',1,8760,24),
-    ...['show_labels','show_axis','show_legend','show_state_labels','show_grid','show_summary','show_navigation','sync_hover'].map(name=>({name,default:!['show_state_labels','show_summary'].includes(name),selector:{boolean:{}}})),
+    ...['show_title','show_labels','show_axis','show_legend','show_state_labels','show_grid','show_summary','show_navigation','sync_hover'].map(name=>({name,default:!['show_state_labels','show_summary'].includes(name),selector:{boolean:{}}})),
     {name:'hover_sync_group',selector:{text:{}}}
    ]),
    group('status_settings','Algemene statusregels',[{name:'state_colors',selector:this._rules()},{name:'default_color',selector:{color_rgb:{}}}]),
@@ -3395,7 +3870,7 @@ class TimelineCard extends HTMLElement{
   if(!customElements.get('eleven-timeline-editor'))customElements.define('eleven-timeline-editor',TimelineSettingsEditor);
   return document.createElement('eleven-timeline-editor');
  }
- setConfig(c){validateTimeline(c,this._hass);if(!Array.isArray(c.entities)||!c.entities.length||c.entities.length>16||c.entities.some(id=>typeof id!=='string'||!/^\w+\.\w+$/.test(id)))throw Error('Kies 1–16 entiteiten.');const config={hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c};for(const [k,min,max] of [['hours_to_show',1,8760],['bar_height',4,80],['border_radius',0,40],['row_gap',0,64]])if(!Number.isFinite(config[k])||config[k]<min||config[k]>max)throw Error(`Ongeldige ${k}`);for(const k of ['state_colors','series_options'])if(!Array.isArray(config[k])||config[k].some(x=>!x||typeof x!=='object'))throw Error(`Ongeldige ${k}`);SharedGraph.clearHover(this);this._config={...config,hover_sync_group:config.hover_sync_group??''};this._viewport=null;this._periodHours=null;this._periodEnd=null;this._hideTooltip();this._generation++;this._inFlight=false;this._series=[];this._stateLimits=[];this._status='loading';clearTimeout(this._timer);this._render();if(this._connected&&this._hass)this._refresh();}
+ setConfig(c){validateTimeline(c,this._hass);if(!Array.isArray(c.entities)||!c.entities.length||c.entities.length>16||c.entities.some(id=>typeof id!=='string'||!/^\w+\.\w+$/.test(id)))throw Error('Kies 1–16 entiteiten.');const config={hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_title:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c};for(const [k,min,max] of [['hours_to_show',1,8760],['bar_height',4,80],['border_radius',0,40],['row_gap',0,64]])if(!Number.isFinite(config[k])||config[k]<min||config[k]>max)throw Error(`Ongeldige ${k}`);for(const k of ['state_colors','series_options'])if(!Array.isArray(config[k])||config[k].some(x=>!x||typeof x!=='object'))throw Error(`Ongeldige ${k}`);SharedGraph.clearHover(this);this._config={...config,hover_sync_group:config.hover_sync_group??''};this._viewport=null;this._periodHours=null;this._periodEnd=null;this._hideTooltip();this._generation++;this._inFlight=false;this._series=[];this._stateLimits=[];this._status='loading';clearTimeout(this._timer);this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(h){this._hass=h;if(this._config){this._render();if(this._connected&&!this._started)this._refresh();}}
  get hass(){return this._hass;}
  connectedCallback(){this._connected=true;SharedGraph.connectHover(this,t=>this._receiveHover(t));this._outside??=e=>{if(!e.composedPath().includes(this)&&!SharedGraph.hoverSourceInEvent(this,e))this._hideTooltip();};globalThis.document?.addEventListener('pointerdown',this._outside);if(this._config&&this._hass)this._refresh();}
@@ -3404,12 +3879,1284 @@ class TimelineCard extends HTMLElement{
  getGridOptions(){return {columns:12,min_columns:6};}
  _nl(){return (this._hass?.locale?.language??this._hass?.language??'nl').startsWith('nl');}
  _time(t,full=false){try{return new Intl.DateTimeFormat(this._nl()?'nl-NL':'en-GB',{hour:'2-digit',minute:'2-digit',...(full||(this._viewEnd-this._viewStart)>86400000?{day:'2-digit',month:'short'}:{}),timeZone:this._hass?.config?.time_zone}).format(t);}catch{return new Date(t).toLocaleTimeString();}}
- _appearance(state,id){const m=this._config.state_colors.find(x=>String(x.state)===state&&x.entity===id)??this._config.state_colors.find(x=>String(x.state)===state&&!x.entity);const defaults={on:'#26a69a',off:'#607d94',home:'#26a69a',not_home:'#e78a14',unknown:'#9e9e9e',unavailable:'#9e9e9e'};return {label:m?.label??(state==='unknown'?(this._nl()?'Onbekend':'Unknown'):state==='unavailable'?(this._nl()?'Niet beschikbaar':'Unavailable'):state),color:color(m?.color,color(this._config.default_color,defaults[state]??'#ab70d9'))};}
+ _semanticColor(state,id){
+  const defaults={on:'#0072b2',off:'#8b949e',home:'#009e73',not_home:'#e69f00',unknown:'#767676',unavailable:'#b64e86'};
+  if(id?.startsWith('binary_sensor.')&&['on','off'].includes(state)){
+   const deviceClass=this._hass?.states?.[id]?.attributes?.device_class;
+   if(['battery','carbon_monoxide','gas','moisture','problem','safety','smoke','tamper'].includes(deviceClass))return state==='on'?'#d55e00':'#009e73';
+   if(['door','garage_door','opening','window','lock'].includes(deviceClass))return state==='on'?'#e69f00':deviceClass==='lock'?'#009e73':'#8b949e';
+   if(deviceClass==='connectivity')return state==='on'?'#009e73':'#d55e00';
+  }
+  if(id?.startsWith('lock.'))return {locked:'#009e73',unlocked:'#e69f00',locking:'#0072b2',unlocking:'#cc79a7',jammed:'#d55e00'}[state]??defaults[state];
+  if(id?.startsWith('cover.'))return {open:'#0072b2',closed:'#8b949e',opening:'#009e73',closing:'#e69f00'}[state]??defaults[state];
+  return defaults[state];
+ }
+ _categoricalColor(state,id){
+  const palette=['#4477aa','#ee7733','#228833','#cc6677','#aa3377','#66ccee','#997700','#882255','#44aa99','#332288','#ddaa33','#6699cc','#aa4499','#117733','#ddcc77','#88ccee','#cc3311','#7777bb','#bb8844','#44bbbb'];
+  const series=this._series?.[this._config.entities.indexOf(id)];
+  const hash=value=>{let n=2166136261;for(const ch of value)n=Math.imul(n^ch.charCodeAt(0),16777619);return n>>>0;};
+  if(!series)return palette[hash(state)%palette.length];
+  this._categoryColors??=new WeakMap();let colors=this._categoryColors.get(series);
+  if(!colors){
+   colors=new Map();const used=new Set(),states=[...new Set(series.filter(s=>!s.missing&&!this._semanticColor(String(s.state),id)).map(s=>String(s.state)))].sort();
+   for(const value of states){let index=hash(value)%palette.length;while(used.has(index)&&used.size<palette.length)index=(index+1)%palette.length;used.add(index);colors.set(value,palette[index]);}
+   this._categoryColors.set(series,colors);
+  }
+  return colors.get(state)??palette[hash(state)%palette.length];
+ }
+ _textColor(background){
+  let rgb;if(/^#[\da-f]{6}$/i.test(background))rgb=[1,3,5].map(i=>parseInt(background.slice(i,i+2),16));
+  else if(/^#[\da-f]{3}$/i.test(background))rgb=[...background.slice(1)].map(ch=>parseInt(ch+ch,16));
+  else if(/^rgb\([\d., ]+\)$/.test(background))rgb=background.slice(4,-1).split(',').map(Number);
+  if(!rgb||rgb.length!==3)return '#ffffff';
+  const linear=rgb.map(n=>{const s=n/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}),luminance=linear[0]*.2126+linear[1]*.7152+linear[2]*.0722;
+  return (luminance+.05)/.05>=1.05/(luminance+.05)?'#000000':'#ffffff';
+ }
+ _appearance(state,id){const m=this._config.state_colors.find(x=>String(x.state)===state&&x.entity===id)??this._config.state_colors.find(x=>String(x.state)===state&&!x.entity),background=color(m?.color,color(this._config.default_color,this._semanticColor(state,id)??this._categoricalColor(state,id)));return {label:m?.label??(state==='unknown'?(this._nl()?'Onbekend':'Unknown'):state==='unavailable'?(this._nl()?'Niet beschikbaar':'Unavailable'):state),color:background,textColor:this._textColor(background)};}
  async _refresh(){if(!this._connected||!this._hass||!this._config||this._inFlight)return;clearTimeout(this._timer);this._inFlight=true;this._started=true;const generation=++this._generation,c=this._config,end=this._periodEnd??Date.now(),start=end-(this._periodHours??c.hours_to_show)*3600000;let timeout;try{const q=new URLSearchParams({filter_entity_id:c.entities.join(','),end_time:new Date(end).toISOString(),minimal_response:'',no_attributes:''});const response=await Promise.race([this._hass.callApi('GET',`history/period/${new Date(start).toISOString()}?${q}`),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('timeout')),15000);timeout.unref?.();})]);if(!this._connected||generation!==this._generation)return;if(!Array.isArray(response))throw Error('Invalid history');this._start=start;this._end=end;this._stateLimits=[];this._series=c.entities.map((id,index)=>{const rows=response.find(rows=>rows?.[0]?.entity_id===id)??[],states=new Set();for(const row of rows){if(row.state==null)continue;states.add(String(row.state));if(states.size>20){this._stateLimits[index]=true;return [];}}const result=segments(rows,start,end),first=Math.min(...rows.map(r=>Date.parse(r.last_changed??r.last_updated)).filter(Number.isFinite));if(result[0]?.state==='unknown'&&first>start){if(first<result[0].end)result.unshift({...result[0],end:first,missing:true}),result[1]={...result[1],start:first};else result[0]={...result[0],missing:true};}return result;});this._status='ready';}catch{if(generation===this._generation)this._status='error';}finally{clearTimeout(timeout);if(this._connected&&generation===this._generation){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),60000);this._timer.unref?.();}}}
 }
 Object.assign(TimelineCard.prototype,TimelineView);
 if(!customElements.get('eleven-timeline-card'))customElements.define('eleven-timeline-card',TimelineCard);
 window.customCards??=[];if(!window.customCards.some(c=>c.type==='eleven-timeline-card'))window.customCards.push({type:'eleven-timeline-card',name:'Eleven Timeline Card',description:'Horizontal status history with configurable bars and colors.',preview:true});
 
+
+})();
+
+;
+// Eleven Overview (beta) 0.1.0 — self-contained standalone module
+(()=>{
+function historyUrl(ids,start,end){return `history/period/${new Date(start).toISOString()}?filter_entity_id=${encodeURIComponent(ids.join(','))}&end_time=${encodeURIComponent(new Date(end).toISOString())}`;}
+function historySeries(rows,start,end,unit){
+ const data=(rows??[]).map(r=>({t:Date.parse(r.last_updated??r.last_changed),v:(r.attributes?.unit_of_measurement??'')===(unit??'')?numeric(r.state):null})).filter(r=>Number.isFinite(r.t)&&r.t<=end).sort((a,b)=>a.t-b.t);
+ const before=data.filter(r=>r.t<=start).at(-1),points=before?[{t:start,v:before.v}]:[];
+ for(const r of data)if(r.t>start)points.push(r);
+ if(points.length)points.push({t:end,v:points.at(-1).v});
+ return {points,baseline:before?.v??null};
+}
+function delta(series,current){return series?.baseline!=null&&current!=null?current-series.baseline:null;}
+function sparkline(points,start,end){
+ const values=points.filter(p=>p.v!=null).map(p=>p.v);if(!values.length||end<=start)return '';
+ let min=Infinity,max=-Infinity;for(const v of values){min=Math.min(min,v);max=Math.max(max,v);}
+ const span=max-min;let path='',prior=null;
+ for(const p of points){const x=2+Math.max(0,Math.min(1,(p.t-start)/(end-start)))*296;if(p.v==null){if(prior)path+=`H${x.toFixed(2)}`;prior=null;continue;}const y=span?44-(p.v-min)/span*40:24;
+ path+=prior==null?`M${x.toFixed(2)},${y.toFixed(2)}`:`H${x.toFixed(2)}V${y.toFixed(2)}`;prior=p;}
+ return path;
+}
+const PALETTE=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
+function numeric(value){if(typeof value!=='number'&&(typeof value!=='string'||!value.trim()||!/^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(value.trim())))return null;const n=Number(value);return Number.isFinite(n)?n:null;}
+function color(value,fallback=PALETTE[0]){if(Array.isArray(value)&&value.length===3&&value.every(n=>Number.isInteger(n)&&n>=0&&n<=255))return `rgb(${value.join(',')})`;return typeof value==='string'&&/^#[\da-f]{3}(?:[\da-f]{3})?$/i.test(value)?value:fallback;}
+const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function normalizeConfig(input,{draft=false}={}){
+ const entities=(input.entities??[]).map((row,i)=>typeof row==='string'?{entity:row,color:PALETTE[i]}:{...row,color:Array.isArray(row.color)?[...row.color]:row.color??PALETTE[i]});
+ if(!draft&&(!entities.length||entities.length>8||entities.some(r=>!/^sensor\.[a-z0-9_]+$/.test(r.entity))||new Set(entities.map(r=>r.entity)).size!==entities.length))throw Error('Select 1–8 unique sensor entities. / Kies 1–8 unieke sensoren.');
+ const hours=input.hours_to_show??24,columns=String(input.columns??'auto');
+ if(!Number.isFinite(hours)||hours<1||hours>168)throw Error('Period must be 1–168 hours. / Periode moet 1–168 uur zijn.');
+ if(!['auto','1','2','3'].includes(columns))throw Error('Columns must be auto, 1, 2 or 3.');
+ return {...input,type:'custom:eleven-overview-card',title:input.title??'Eleven Overview (beta)',hours_to_show:hours,columns,show_graph:input.show_graph!==false,show_delta:input.show_delta!==false,entities};
+}
+
+
+const esc=escapeHtml;
+const nl=h=>String(h?.locale?.language??h?.language??'en').startsWith('nl');
+const labels={title:['Titel','Title'],hours_to_show:['Periode (uur)','Period (hours)'],columns:['Kolommen','Columns'],show_graph:['Trendlijnen tonen','Show sparklines'],show_delta:['Verandering tonen','Show change'],entity:['Sensor','Sensor'],name:['Naam','Name'],color:['Kleur','Color']};
+function form(schema){return {schema,computeLabel:function(s){return labels[s.name]?.[nl(this?.hass)?0:1]??s.name;}};}
+class OverviewEditor extends HTMLElement{
+ constructor(){super();this.attachShadow({mode:'open'});}
+ setConfig(c){this._config=normalizeConfig(c,{draft:true});this._render();}
+ set hass(h){this._hass=h;this._render();}get hass(){return this._hass;}
+ _emit(){this.dispatchEvent(new CustomEvent('config-changed',{detail:{config:{...this._config,entities:this._config.entities.filter(r=>r.entity).map(r=>({...r,color:Array.isArray(r.color)?[...r.color]:r.color}))}},bubbles:true,composed:true}));}
+ _bind(node,definition,data){node.hass=this._hass;node.schema=definition.schema;node.data=data;node.computeLabel=s=>definition.computeLabel.call(this,s);}
+ _render(){
+  if(!this._config||!this._hass)return;const dutch=nl(this._hass);
+  if(!this._form){this.shadowRoot.innerHTML=`<style>:host{display:block;min-width:0}h3{font-size:16px;margin:24px 0 12px}details{border:1px solid var(--divider-color);border-radius:12px;margin:12px 0;min-width:0}summary{padding:12px;min-height:44px;box-sizing:border-box;cursor:pointer;overflow-wrap:anywhere}.body{padding:0 12px 12px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}button{font:inherit;min-height:44px;border:1px solid var(--divider-color);border-radius:6px;padding:8px 12px;background:var(--card-background-color);color:var(--primary-text-color);cursor:pointer}button:disabled{opacity:.4}button:focus-visible,summary:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}.remove{margin-left:auto}</style><ha-form class="global"></ha-form><h3></h3><div class="sensors"></div><button class="add" type="button"></button>`;
+   this._form=this.shadowRoot.querySelector('.global');this._form.addEventListener('value-changed',e=>{e.stopPropagation();this._config=normalizeConfig({...this._config,...e.detail.value,entities:this._config.entities},{draft:true});this._emit();});
+   this.shadowRoot.querySelector('.add').onclick=()=>{if(this._config.entities.length>=8)return;this._config={...this._config,entities:[...this._config.entities,{entity:'',color:PALETTE[this._config.entities.length]}]};this._render();this.shadowRoot.querySelector('.sensors').lastElementChild.open=true;};
+  }
+  this._bind(this._form,OverviewCard.getConfigForm(),this._config);this.shadowRoot.querySelector('h3').textContent=dutch?'Sensoren':'Sensors';const add=this.shadowRoot.querySelector('.add');add.textContent=dutch?'Sensor toevoegen':'Add sensor';add.disabled=this._config.entities.length>=8;
+  const container=this.shadowRoot.querySelector('.sensors');while(container.children.length>this._config.entities.length)container.lastElementChild.remove();
+  this._config.entities.forEach((r,i)=>{let entry=container.children[i];if(!entry){entry=document.createElement('details');entry.innerHTML='<summary></summary><div class="body"><ha-form></ha-form><div class="actions"><button class="up" type="button"></button><button class="down" type="button"></button><button class="remove" type="button"></button></div></div>';container.append(entry);entry.open=this._config.entities.length===1;
+   entry.querySelector('ha-form').addEventListener('value-changed',e=>{e.stopPropagation();const rows=this._config.entities.map((row,j)=>j===i?{...row,...e.detail.value}:row);this._config={...this._config,entities:rows};this._render();this._emit();});
+   for(const [key,d] of [['up',-1],['down',1],['remove',0]])entry.querySelector('.'+key).onclick=()=>{const rows=[...this._config.entities];if(key==='remove')rows.splice(i,1);else{const j=i+d;if(j<0||j>=rows.length)return;[rows[i],rows[j]]=[rows[j],rows[i]];}this._config={...this._config,entities:rows};this._render();this._emit();};
+  }
+  entry.querySelector('summary').textContent=r.name||this._hass.states?.[r.entity]?.attributes?.friendly_name||r.entity||(dutch?'Nieuwe sensor':'New sensor');this._bind(entry.querySelector('ha-form'),OverviewCard.getSensorForm(),r);
+  for(const [key,title] of [['up',dutch?'Omhoog':'Move up'],['down',dutch?'Omlaag':'Move down'],['remove',dutch?'Verwijderen':'Remove']]){const b=entry.querySelector('.'+key);b.textContent=title;b.disabled=key==='up'?i===0:key==='down'?i===this._config.entities.length-1:false;}
+  });
+ }
+}
+class OverviewCard extends HTMLElement{
+ constructor(){super();this.attachShadow({mode:'open'});this._generation=0;this._history={};this._units={};this._status='loading';this._connected=false;this._timer=null;}
+ static getConfigForm(){return form([{name:'title',selector:{text:{}}},{name:'hours_to_show',selector:{number:{min:1,max:168,step:1,mode:'box'}}},{name:'columns',selector:{select:{mode:'dropdown',options:[{value:'auto',label:'Auto'},{value:'1',label:'1'},{value:'2',label:'2'},{value:'3',label:'3'}]}}},{name:'show_graph',selector:{boolean:{}}},{name:'show_delta',selector:{boolean:{}}}]);}
+ static getSensorForm(){return form([{name:'entity',required:true,selector:{entity:{domain:'sensor'}}},{name:'name',selector:{text:{}}},{name:'color',selector:{color_rgb:{}}}]);}
+ static async getConfigElement(){if(!customElements.get('ha-form')){const helpers=await window.loadCardHelpers();const card=await helpers.createCardElement({type:'entities',entities:[]});await card.constructor.getConfigElement();await customElements.whenDefined('ha-form');}if(!customElements.get('eleven-overview-editor'))customElements.define('eleven-overview-editor',OverviewEditor);return document.createElement('eleven-overview-editor');}
+ static getStubConfig(hass){return {title:'Eleven Overview (beta)',hours_to_show:24,entities:Object.entries(hass?.states??{}).filter(([id,s])=>id.startsWith('sensor.')&&numeric(s.state)!=null).slice(0,4).map(([id])=>id)};}
+ setConfig(config){this._config=normalizeConfig(config);this._generation++;this._promise=null;this._history={};this._status='loading';clearTimeout(this._timer);this._render();if(this._connected)this._refresh();}
+ set hass(h){this._hass=h;this._render();if(this._connected&&!this._promise&&this._status==='loading')this._refresh();}get hass(){return this._hass;}
+ connectedCallback(){this._connected=true;this._refresh();}
+ disconnectedCallback(){this._connected=false;this._generation++;this._promise=null;clearTimeout(this._timer);this._timer=null;}
+ getCardSize(){return 1+Math.ceil((this._config?.entities.length??1)/2)*2;}
+ getGridOptions(){return {columns:12,min_columns:6};}
+ _format(value){const locale=this._hass?.locale?.language??this._hass?.language??'en';try{return new Intl.NumberFormat(locale,Math.abs(value)>0&&Math.abs(value)<0.01?{maximumSignificantDigits:3}:{maximumFractionDigits:2}).format(value);}catch{return String(value);}}
+ _refresh(){
+  if(!this._connected||!this._hass||!this._config)return Promise.resolve();if(this._promise)return this._promise;
+  clearTimeout(this._timer);const generation=this._generation,end=Date.now(),start=end-this._config.hours_to_show*3600000,ids=this._config.entities.map(r=>r.entity),hass=this._hass;
+  const units=Object.fromEntries(ids.map(id=>[id,hass.states?.[id]?.attributes?.unit_of_measurement??'']));
+  let requestTimer;const work=(async()=>{try{const data=await Promise.race([hass.callApi('GET',historyUrl(ids,start,end)),new Promise((_,reject)=>{requestTimer=setTimeout(()=>reject(Error('History timeout')),15000);})]);if(!this._connected||generation!==this._generation)return;
+    const grouped=new Map((data??[]).filter(r=>r.length).map(r=>[r[0].entity_id,r]));this._history=Object.fromEntries(ids.map(id=>[id,historySeries(grouped.get(id),start,end,units[id])]));this._units=units;this._start=start;this._end=end;this._status='ready';
+   }catch{if(generation===this._generation&&this._connected)this._status='error';}
+   finally{clearTimeout(requestTimer);if(generation===this._generation&&this._connected){this._promise=null;this._render();this._timer=setTimeout(()=>this._refresh(),60000);}}
+  })();this._promise=work;return work;
+ }
+ _render(){
+  if(!this._config)return;const c=this._config,dutch=nl(this._hass),focus=this.shadowRoot.activeElement?.dataset.entity;
+  const period=`${c.hours_to_show} ${dutch?'uur':'hours'}`,cells=c.entities.map((row,i)=>{
+   const s=this._hass?.states?.[row.entity],v=numeric(s?.state),unit=s?.attributes?.unit_of_measurement??'',name=row.name||s?.attributes?.friendly_name||row.entity;
+   const history=this._status==='ready'&&this._units[row.entity]===unit?this._history[row.entity]:null,change=delta(history,v),path=history?sparkline(history.points,this._start,this._end):'';
+   const status=!s?(dutch?'Sensor niet gevonden':'Entity not found'):v==null?(dutch?'Niet beschikbaar':'Unavailable'):'';
+   const graphStatus=this._status==='loading'?(dutch?'Geschiedenis laden…':'Loading history…'):this._status==='error'?(dutch?'Geen geschiedenis geladen':'History not loaded'):dutch?'Geen geschiedenis':'No history';
+   const difference=change==null?(dutch?'Geen vergelijkingspunt':'No comparison point'):`${change>0?'+':''}${this._format(change)}${unit?' '+(unit==='%'?'pp':unit):''}`;
+   return `<button type="button" class="metric" data-entity="${esc(row.entity)}" aria-label="${esc(name+': '+(status||this._format(v)+' '+unit))}" style="--series-color:${color(row.color,PALETTE[i])}"><span class="label"><i></i>${esc(name)}</span><span class="reading"><span class="value">${v==null?'—':esc(this._format(v))}</span>${v!=null&&unit?`<span class="unit">${esc(unit)}</span>`:''}</span>${status?`<span class="status">${status}</span>`:''}${c.show_graph?`<span class="spark">${path?`<svg viewBox="0 0 300 48" preserveAspectRatio="none" aria-hidden="true"><path d="${path}"/></svg>`:`<span>${graphStatus}</span>`}</span>`:''}${c.show_delta?`<span class="delta">${v==null?'—':esc(difference)}</span><span class="caption">${dutch?'sinds begin periode':'since period start'}</span>`:''}</button>`;
+  }).join('');
+  this.shadowRoot.innerHTML=`<style>:host{display:block;min-width:0;container-type:inline-size}ha-card{display:block;height:100%;font-family:inherit;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b)}.content{padding:16px;box-sizing:border-box}header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:20px}h2{font-size:18px;font-weight:650;letter-spacing:-.01em;line-height:1.25;margin:0;overflow-wrap:anywhere}.period{font-size:12px;color:var(--secondary-text-color,#666);white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(${c.columns==='auto'?'2':c.columns},minmax(0,1fr));gap:20px 24px}.metric{appearance:none;font:inherit;color:inherit;background:none;border:0;border-radius:4px;text-align:left;min-width:0;min-height:44px;padding:0;cursor:pointer;display:flex;flex-direction:column;align-items:stretch}.metric:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:5px}.label{font-size:12px;color:var(--secondary-text-color,#666);line-height:1.4;overflow-wrap:anywhere;display:flex;align-items:baseline;gap:7px}.label i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--series-color);flex-shrink:0}.reading{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;margin-top:6px;font-variant-numeric:tabular-nums;min-width:0}.value{font-size:28px;font-weight:550;line-height:1.25;overflow-wrap:anywhere;letter-spacing:-.025em}.unit{font-size:13px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}.spark{height:48px;display:flex;align-items:center;margin-top:8px;color:var(--secondary-text-color,#666);font-size:11px}.spark svg{width:100%;height:48px;overflow:visible}.spark path{fill:none;stroke:var(--series-color);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}.delta{font-size:12px;font-variant-numeric:tabular-nums;margin-top:8px;overflow-wrap:anywhere}.caption{font-size:11px;color:var(--secondary-text-color,#666);margin-top:2px}.status{font-size:12px;color:var(--secondary-text-color,#666);margin-top:4px}.error{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;font-size:12px;color:var(--secondary-text-color,#666)}.retry{font:inherit;min-height:44px;flex-shrink:0;padding:8px 12px;border:1px solid var(--divider-color,#ddd);border-radius:6px;background:transparent;color:inherit;cursor:pointer}@container(max-width:340px){.grid{grid-template-columns:minmax(0,1fr)}header{margin-bottom:16px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}</style><ha-card><div class="content"><header><h2>${esc(c.title)}${/\(beta\)/i.test(c.title)?'':' <small>(beta)</small>'}</h2><span class="period">${period}</span></header><div class="grid">${cells}</div>${this._status==='error'?`<div class="error" role="status"><span>${dutch?'Geschiedenis kon niet worden geladen. Actuele waarden blijven beschikbaar.':'History could not be loaded. Live values remain available.'}</span><button type="button" class="retry">${dutch?'Opnieuw':'Retry'}</button></div>`:''}</div></ha-card>`;
+  this.shadowRoot.querySelectorAll('.metric').forEach(b=>{b.onclick=()=>this.dispatchEvent(new CustomEvent('hass-more-info',{detail:{entityId:b.dataset.entity},bubbles:true,composed:true}));if(b.dataset.entity===focus)b.focus();});const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();
+ }
+}
+
+if(!customElements.get('eleven-overview-card'))customElements.define('eleven-overview-card',OverviewCard);
+window.customCards=window.customCards||[];
+if(!window.customCards.some(c=>c.type==='eleven-overview-card'))window.customCards.push({type:'eleven-overview-card',name:'Eleven Overview (beta)',description:'Current sensor values, sparklines and change since period start.',preview:true});
+})();
+
+;
+/* Eleven Bar Chart — local beta; standalone, based on Eleven History. */
+(()=>{
+"use strict";
+
+// ../../shared/graph.js
+// Domain-neutral SVG renderer. Adapters own data, geometry, colors and annotations.
+function graphLineStyle(style, width = 3.5) {
+  return {style, width, dash: style === 'dashed' ? '8 7' : style === 'dotted' ? '1 7' : 'none', cap: style === 'dashed' ? 'butt' : 'round'};
+}
+const graphAttribute = value => String(value).replace(/[&"<>]/g, c => ({'&':'&amp;','"':'&quot;','<':'&lt;','>':'&gt;'}[c]));
+class SharedGraph {
+  static hoverGroup(host) {
+    return host._config?.sync_hover === false ? null : (host._config?.hover_sync_group?.trim() || 'default');
+  }
+  static hoverState() {
+    const key = Symbol.for('eleven-cards.hover-sync.v1');
+    const target = globalThis.window ?? globalThis;
+    return target[key] ??= new Map();
+  }
+  static connectHover(host, receive) {
+    this.disconnectHover(host);
+    host._receiveSharedHover = receive;
+    host._sharedHoverListener = event => {
+      const {source, group, timestamp} = event.detail;
+      if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
+    };
+    window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
+  }
+  static publishHover(host, timestamp) {
+    const group = this.hoverGroup(host);
+    if (!group || !host.isConnected || !Number.isFinite(timestamp)) return;
+    this.hoverState().set(group, {source: host, timestamp});
+    window.dispatchEvent(new CustomEvent('eleven-cards:hover-sync', {detail: {source: host, group, timestamp}}));
+  }
+  static clearHover(host) {
+    for (const [group, active] of this.hoverState()) {
+      if (active.source !== host) continue;
+      this.hoverState().delete(group);
+      window.dispatchEvent(new CustomEvent('eleven-cards:hover-sync', {detail: {source: host, group, timestamp: null}}));
+    }
+  }
+  static hoverSourceInEvent(host, event) {
+    const active = this.hoverState().get(this.hoverGroup(host));
+    return Boolean(active && event.composedPath().includes(active.source));
+  }
+  static restoreHover(host) {
+    if (!host.isConnected) return;
+    const active = this.hoverState().get(this.hoverGroup(host));
+    if (active && host.isConnected) host._receiveSharedHover?.(active.timestamp);
+  }
+  static disconnectHover(host) {
+    this.clearHover(host);
+    if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
+    host._sharedHoverListener = null;
+    host._receiveSharedHover = null;
+  }
+  static interpolation(value, fallback = 'smooth') {
+    const mode = value == null || value === '' ? fallback : value;
+    if (!['smooth', 'linear', 'step'].includes(mode)) throw new Error('line_interpolation');
+    return mode;
+  }
+  static path(points, mode = 'smooth', end) {
+    mode = this.interpolation(mode);
+    let path = '', previous = null;
+    for (const [x, y] of points) {
+      if (!Number.isFinite(y)) {
+        if (previous && end !== undefined) path += ` H ${x}`;
+        previous = null;
+        continue;
+      }
+      if (!previous) path += `${path ? ' ' : ''}M ${x} ${y}`;
+      else if (mode === 'linear') path += ` L ${x} ${y}`;
+      else if (mode === 'step') path += ` H ${x} V ${y}`;
+      else {
+        const middle = (previous[0] + x) / 2;
+        path += ` C ${middle} ${previous[1]}, ${middle} ${y}, ${x} ${y}`;
+      }
+      previous = [x, y];
+    }
+    if (previous && end !== undefined) path += ` H ${end}`;
+    return path;
+  }
+  render(host, {viewBox, defs = '', before = '', after = '', fills = [], lines = []}) {
+    const previous = host.shadowRoot.querySelector('.chart-enter')?.getAnimations?.().find(a => a.animationName === 'chart-reveal' && a.playState !== 'finished' && Number(a.currentTime ?? 0) < 650);
+    this.progress = Number(previous?.currentTime ?? 0);
+    this.entering = Boolean(host.isConnected && (!this.loaded || previous) && lines.some(p => p.d));
+    if (host.isConnected && lines.some(p => p.d)) this.loaded = true;
+    const areas = fills.filter(p => p.d).map(p => `<path d="${graphAttribute(p.d)}" class="${graphAttribute(p.className)}"${p.fill ? ` fill="${graphAttribute(p.fill)}"` : ''}${p.opacity != null ? ` fill-opacity="${p.opacity}"` : ''}${p.mask ? ` mask="${graphAttribute(p.mask)}"` : ''}/>`).join('');
+    const paths = lines.filter(p => p.d).map(p => {
+      const a = p.appearance;
+      const stroke = p.inlineStyle ? `style="stroke:${graphAttribute(a.stroke)};stroke-width:${a.width};stroke-dasharray:${a.dash};stroke-linecap:${a.cap}"` : `stroke="${graphAttribute(a.stroke)}" stroke-width="${a.width}" stroke-dasharray="${a.dash}" stroke-linecap="${a.cap}"`;
+      return `<path d="${graphAttribute(p.d)}" class="${graphAttribute(p.className)}"${p.entity ? ` data-entity="${graphAttribute(p.entity)}"` : ''} ${stroke}/>`;
+    }).join('');
+    return `<svg viewBox="${viewBox}" preserveAspectRatio="none" aria-hidden="true">${defs}${before}<g class="chart-series${this.entering ? ' chart-enter' : ''}">${areas}${paths}</g>${after}</svg>`;
+  }
+  restore(host) {
+    if (this.entering && this.progress > 0) {
+      const animation = host.shadowRoot.querySelector('.chart-enter')?.getAnimations?.().find(a => a.animationName === 'chart-reveal');
+      if (animation) animation.currentTime = this.progress;
+    }
+  }
+}
+function graphStyles() {
+  return `
+      .price-line, .series-line { fill: none; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+      .chart-enter { animation: chart-reveal 650ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+      @keyframes chart-reveal {
+        from { clip-path: inset(0 100% 0 0); }
+        to { clip-path: inset(0 0 0 0); }
+      }
+      .hover-dot { position: absolute; z-index: 2; width: 12px; height: 12px; box-sizing: border-box; border: 3px solid; border-radius: 50%; transform: translate(-50%, -50%); background: var(--card-background-color); pointer-events: none; }
+      @media (prefers-reduced-motion: reduce) { .chart-enter { animation: none; } }
+  `;
+}
+
+// ../../shared/card-header.js
+// Shared markup stays in each card's shadow root: native links and existing
+// data-zoom handlers work without cross-bundle custom-element registration.
+const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function cardHeaderIcon(name){
+ const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',history:'m9 6 6 6-6 6'};
+ return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
+}
+function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en'}){
+ const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Geschiedenis']:['Zoom in','Zoom out','Reset zoom','History'];
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['in','out','reset'].map((action,i)=>`<button type="button" data-zoom="${action}" title="${label[i]}" aria-label="${label[i]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${zoom}<a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a></div></header>`;
+}
+function cardHeaderStyles(){return `
+.card-header{display:flex;align-items:flex-start;gap:8px;min-height:32px;flex:none;margin:-6px -4px 12px 0}
+.card-header h2{flex:1;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.header-actions{display:flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto}
+.zoom-controls{display:flex;gap:2px}
+.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);text-decoration:none;cursor:pointer}
+.header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
+.header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.header-actions svg,.period-controls button svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+`;}
+
+// ../history-graph-card/src/history-utils.js
+function validColor(color){return typeof color==='string'?/^#[\da-f]{6}$/i.test(color):Array.isArray(color)&&color.length===3&&color.every(v=>Number.isInteger(v)&&v>=0&&v<=255);}
+const SERIES_COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
+const APPEARANCE_KEYS=['line_width','line_style','line_interpolation','line_color','show_fill','fill_color','fill_opacity','fill_fade','gradient_mode','gradient_stops'];
+// Resolve legacy inheritance once. Explicit modes on new rows have no implicit precedence.
+const LINE_GEOMETRY_KEYS=['line_width','line_style','line_interpolation'];
+function seriesAppearance(config,index,seen=new Set()) {
+ if(seen.has(config.entities[index]))throw new Error('line_style_source_cycle');
+ seen.add(config.entities[index]);
+ const option=config.series_options?.find(s=>s.entity===config.entities[index])??{};
+ const inherited=option.gradient_stops??(option.color?[]:config.gradient_stops??[]);
+ const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
+ const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
+  line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
+  line_interpolation:option.line_interpolation??config.line_interpolation??'step',
+  color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
+  gradient_mode:option.gradient_mode??config.gradient_mode??'smooth',gradient_stops:option.gradient_stops??inherited,
+  show_fill:option.show_fill??config.show_fill??false,fill_opacity:option.fill_opacity??config.fill_opacity??0.18,
+  fill_fade:option.fill_fade??config.fill_fade??true,
+  fill_mode:option.fill_mode??((option.fill_color||config.fill_color)?'own':'line'),
+  fill_color:option.fill_color||config.fill_color||option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length]};
+ if(option.line_style_source){
+  const source=config.entities.indexOf(option.line_style_source);
+  if(source<0)throw new Error('line_style_source_missing');
+  const style=seriesAppearance(config,source,seen);
+  for(const key of LINE_GEOMETRY_KEYS)row[key]=style[key];
+  row.line_style_source=option.line_style_source;
+ }
+ return structuredClone(row);
+}
+function editorConfig(config) {
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+  const row=seriesAppearance(config,index);
+  for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
+  row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
+  return row;
+ })};
+ delete data.series_options;for(const key of APPEARANCE_KEYS)delete data[key];return data;
+}
+function cardConfig(data) {
+ const result={...data,entities:(data.entities??[]).map(row=>row.entity)};
+ result.series_options=(data.entities??[]).map((row,index)=>{
+  const resolved=seriesAppearance({entities:result.entities,series_options:data.entities},index);
+  if(!row.name)delete resolved.name;return resolved;
+ });
+ for(const key of APPEARANCE_KEYS)delete result[key];return result;
+}
+// Keep effective geometry concrete in editor rows; the explicit link remains its owner.
+function resolvedEditorRows(rows){
+ const config={entities:rows.map(r=>r.entity),series_options:rows};
+ return rows.map((row,index)=>{
+  if(!row.entity)return structuredClone(row);
+  const result=structuredClone(row),effective=seriesAppearance(config,index);
+  for(const key of LINE_GEOMETRY_KEYS)result[key]=effective[key];
+  return result;
+ });
+}
+function updateSeriesRow(data,index,value){
+ const rows=resolvedEditorRows(data.entities),old=rows[index];
+ rows[index]={...old,...structuredClone(value)};
+ // Detaching takes the effective source geometry, never stale hidden fields.
+ if(old.line_style_source&&!rows[index].line_style_source){
+  delete rows[index].line_style_source;
+  for(const key of LINE_GEOMETRY_KEYS)rows[index][key]=old[key];
+ }
+ if(old.entity&&old.entity!==rows[index].entity)for(const row of rows){
+  if(row.line_style_source===old.entity){
+   if(rows[index].entity)row.line_style_source=rows[index].entity;
+   else delete row.line_style_source;
+  }
+ }
+ return {...data,entities:resolvedEditorRows(rows)};
+}
+function removeSeriesRow(data,index){
+ const rows=resolvedEditorRows(data.entities),removed=rows[index].entity;
+ const remaining=rows.filter((_,i)=>i!==index);
+ for(const row of remaining)if(row.line_style_source===removed)delete row.line_style_source;
+ return {...data,entities:resolvedEditorRows(remaining)};
+}
+function lineStyleSources(rows,row){
+ return rows.filter(candidate=>{
+  if(!candidate.entity||candidate.entity===row.entity)return false;
+  const seen=new Set([row.entity]);let current=candidate;
+  while(current){
+   if(seen.has(current.entity))return false;
+   seen.add(current.entity);
+   current=rows.find(r=>r.entity===current.line_style_source);
+  }
+  return true;
+ });
+}
+function validateConfig(config) {
+ const entities=config?.entities;
+ if(!Array.isArray(entities)||entities.length<1||entities.length>8||entities.some(id=>typeof id!=='string'||!/^sensor\.[a-z0-9_]+$/.test(id))||new Set(entities).size!==entities.length) throw new Error('entities');
+ const hours=config.hours_to_show??24;
+ if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
+ if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
+ if(result.hover_sync_group==null)result.hover_sync_group='';
+ if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
+ result.line_interpolation=result.line_interpolation==null||result.line_interpolation===''?'step':result.line_interpolation;
+ if(!['smooth','linear','step'].includes(result.line_interpolation))throw new Error('line_interpolation');
+ for(const key of ['y_min','y_max']){
+  if(result[key]==null||result[key]==='')delete result[key];
+  else if(!Number.isFinite(result[key]))throw new Error(key);
+ }
+ if(result.y_min!==undefined&&result.y_max!==undefined&&result.y_min>=result.y_max)throw new Error('y_range');
+ if(result.y_step==null||result.y_step==='')delete result.y_step;
+ else if(!Number.isFinite(result.y_step)||result.y_step<=0)throw new Error('y_step');
+ if(result.y_step!==undefined&&result.y_min!==undefined&&result.y_max!==undefined)yAxis([],result);
+ if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
+ if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
+ for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
+ if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
+ const stops=result.gradient_stops??[];
+ if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
+ result.gradient_stops=stops.map(s=>({value:s.value,color:Array.isArray(s.color)?[...s.color]:s.color})).sort((a,b)=>a.value-b.value);
+ result.gradient_mode=result.gradient_mode??'smooth';
+ if(!['smooth','steps'].includes(result.gradient_mode)) throw new Error('gradient_mode');
+ result.graph_mode=result.graph_mode??'lines';
+ result.data_source=result.data_source??'auto';
+ if(!['auto','history','statistics'].includes(result.data_source))throw new Error('data_source');
+ result.aggregation_period=result.aggregation_period??'none';result.aggregation_method=result.aggregation_method??'avg';
+ if(!['none','minute','quarter_hour','hour','day','week','month'].includes(result.aggregation_period))throw new Error('aggregation_period');
+ if(!['min','max','avg','delta'].includes(result.aggregation_method))throw new Error('aggregation_method');
+ if(!['lines','stacked'].includes(result.graph_mode))throw new Error('graph_mode');
+ const options=result.series_options??[];
+ if(!Array.isArray(options)||options.some(s=>!s||!entities.includes(s.entity)||(s.name!=null&&typeof s.name!=='string')||(s.color!=null&&s.color!==''&&!validColor(s.color)))||new Set(options.map(s=>s.entity)).size!==options.length)throw new Error('series_options');
+ result.series_options=options.map(s=>{
+  if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
+  if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
+  for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
+  if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
+  if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
+  if(s.gradient_mode!=null&&!['smooth','steps'].includes(s.gradient_mode))throw new Error('series_gradient_mode');
+  const row={...s,color:Array.isArray(s.color)?[...s.color]:s.color,fill_color:Array.isArray(s.fill_color)?[...s.fill_color]:s.fill_color};
+  if(s.gradient_stops!=null){const stops=s.gradient_stops;if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length)throw new Error('series_gradient_stops');row.gradient_stops=stops.map(s=>({value:s.value,color:Array.isArray(s.color)?[...s.color]:s.color})).sort((a,b)=>a.value-b.value);}
+  return row;
+ });
+ for(let i=0;i<entities.length;i++)seriesAppearance(result,i);
+ return result;
+}
+function rgb(color){return Array.isArray(color)?color:[1,3,5].map(i=>parseInt(color.slice(i,i+2),16));}
+function gradientColor(stops,value,mode='smooth'){
+ if(!stops.length||!Number.isFinite(value)) return null;
+ let color=rgb(stops[0].color);
+ for(let i=1;i<stops.length;i++){
+  const a=stops[i-1],b=stops[i];
+  if(value<b.value){const ratio=mode==='steps'?0:Math.max(0,(value-a.value)/(b.value-a.value));const end=rgb(b.color);color=rgb(a.color).map((v,j)=>Math.round(v+(end[j]-v)*ratio));return `rgb(${color.join(',')})`;}
+  color=rgb(b.color);
+ }
+ return `rgb(${color.join(',')})`;
+}
+// Statistics are hourly or calendar summaries, never exact raw readings or Delta.
+function statisticsPeriod(config){
+ const source=config.data_source??'auto',period=config.aggregation_period??'none';
+ const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method??'avg')!=='delta';
+ if(source==='statistics'&&!supported)throw new Error('statistics_config');
+ if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48))return null;
+ return period==='none'?'hour':period;
+}
+// HA has used epoch seconds and milliseconds across Recorder versions.
+function statisticTime(value){return typeof value==='number'?(value<1e12?value*1000:value):Date.parse(value);}
+async function loadHistorySeries(hass,config,start,end){
+ const period=statisticsPeriod(config),strict=config.data_source==='statistics',selected=new Map();
+ if(period){
+  try{
+   const metadata=await hass.callWS({type:'recorder/get_statistics_metadata',statistic_ids:config.entities});
+   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
+   if(strict&&ids.length!==config.entities.length)throw new Error('statistics_unavailable');
+   if(ids.length){
+    const field=config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+    const response=await hass.callWS({type:'recorder/statistics_during_period',statistic_ids:ids,start_time:new Date(start).toISOString(),end_time:new Date(end).toISOString(),period,types:[field]});
+    for(const id of ids){
+     if(!Array.isArray(response[id])){if(strict)throw new Error('statistics_unavailable');continue;}
+     const points=[];
+     // End every bin explicitly: missing bins and unfinished tails stay gaps.
+     for(const row of [...response[id]].sort((a,b)=>statisticTime(a.start)-statisticTime(b.start))){
+      const a=Math.max(start,statisticTime(row.start)),b=Math.min(end,statisticTime(row.end));
+      if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)continue;
+      points.push({t:a,v:typeof row[field]==='number'&&Number.isFinite(row[field])?row[field]:null},{t:b,v:null});
+     }
+     if(points.some(p=>p.v!==null)||strict)selected.set(id,{id,source:'statistics',points:[...new Map(points.map(p=>[p.t,p])).values()].sort((a,b)=>a.t-b.t)});
+    }
+   }
+  }catch(error){if(strict)throw error;selected.clear();}
+ }
+ const missing=config.entities.filter(id=>!selected.has(id));
+ if(missing.length){
+  const response=await hass.callApi('GET',historyUrl({...config,entities:missing},end));
+  for(const s of decodeHistory(response,missing,start,end))selected.set(s.id,s);
+ }
+ return config.entities.map(id=>selected.get(id));
+}
+function numericState(state) {
+ if(typeof state!=='string'||state.trim()==='') return null;
+ const number=Number(state); return Number.isFinite(number)?number:null;
+}
+function decodeHistory(response,entities,start,end) {
+ if(!Array.isArray(response)||response.some(rows=>!Array.isArray(rows))) throw new Error('response');
+ const byId=new Map();
+ for(const rows of response) {
+  if(!rows.length) continue;
+  const id=rows[0]?.entity_id;
+  if(!entities.includes(id)) continue;
+  const points=rows.map(row=>({t:Date.parse(row.last_updated??row.last_changed),v:numericState(row.state)})).filter(p=>Number.isFinite(p.t)&&p.t<=end).sort((a,b)=>a.t-b.t);
+  const previous=points.filter(p=>p.t<start).at(-1);
+  const clipped=points.filter(p=>p.t>=start);
+  if(previous) clipped.unshift({...previous,t:start});
+  byId.set(id,[...new Map(clipped.map(p=>[p.t,p])).values()]);
+ }
+ return entities.map(id=>({id,points:byId.get(id)??[]}));
+}
+function valueAt(points,time) {
+ let left=0,right=points.length-1,index=-1;
+ while(left<=right) {const mid=(left+right)>>1;if(points[mid].t<=time){index=mid;left=mid+1;}else right=mid-1;}
+ return index<0?null:points[index].v;
+}
+function stepPath(points,end,x,y) {
+ let path='',active=false;
+ for(const point of points) {
+  if(active) path+=` H ${x(point.t)}`;
+  if(point.v===null) {active=false;continue;}
+  path+=active?` V ${y(point.v)}`:`${path?' ':''}M ${x(point.t)} ${y(point.v)}`;
+  active=true;
+ }
+ if(active) path+=` H ${x(end)}`;
+ return path;
+}
+function seriesMetadata(hass,entities,options=[]) {
+ const items=entities.map(id=>{
+  const state=hass.states?.[id]; if(!state) throw new Error('missing');
+  const option=options.find(s=>s.entity===id);
+  return {id,name:option?.name||state.attributes?.friendly_name||id,unit:state.attributes?.unit_of_measurement??''};
+ });
+ return {items,unit:items[0]?.unit??''};
+}
+// Group by exact unit, never add or scale incompatible quantities together.
+function graphAxes(series,meta,config,start,end,visible=series.map(()=>true)){
+ const units=[...new Set(meta.items.filter((_,i)=>visible[i]).map(item=>item.unit))];
+ if(!units.length)units.push(meta.items[0]?.unit??'');
+ const seriesAxes=meta.items.map(item=>units.indexOf(item.unit));
+ const plotSeries=config.graph_mode==='stacked'?series.slice():series;
+ const axes=units.map((unit,index)=>{
+  const indices=seriesAxes.flatMap((axis,i)=>axis===index&&visible[i]?[i]:[]);
+  let group=indices.map(i=>series[i]);
+  if(config.graph_mode==='stacked'){
+   group=stackSeries(group,start,end);
+   indices.forEach((i,j)=>{plotSeries[i]=group[j];});
+  }
+  return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
+ });
+ return {axes:alignZeroAxes(axes,config,meta.items[0]?.unit),seriesAxes,plotSeries};
+}
+// Expand only negative axes; never rescale readings or clip the original ranges.
+function alignZeroAxes(axes,config={},primaryUnit=axes[0]?.unit){
+ if(config.align_zero===false)return axes;
+ const negative=axes.filter(a=>a.min<0);
+ if(negative.length<2)return axes;
+ const primary=negative.find(a=>a.unit===primaryUnit);
+ const fixed=primary&&[config.y_min,config.y_max].some(Number.isFinite);
+ const fraction=a=>-a.min/(a.max-a.min);
+ // Explicit first-unit bounds win, including bounds that exclude zero.
+ if(fixed&&(primary.max<0||(primary.max===0&&negative.some(a=>a.max>0))))return axes;
+ const part=fixed?fraction(primary):negative.reduce((sum,a)=>sum+Math.min(1,fraction(a)),0)/negative.length;
+ return axes.map(a=>{
+  if(a.min>=0||(fixed&&a===primary))return a;
+  const span=Math.max(-a.min/part,part===1?0:Math.max(0,a.max)/(1-part));
+  const min=-span*part,max=part===1?0:span*(1-part);
+  const options={y_min:min,y_max:max,...(a.unit===primaryUnit&&config.y_step!=null?{y_step:config.y_step}:{})};
+  return {unit:a.unit,...yAxis([],options)};
+ });
+}
+function yRange(series,config={}) {
+ let min=Infinity,max=-Infinity;
+ for(const s of series) for(const p of s.points) for(const value of [p.v,p.base])if(Number.isFinite(value)){min=Math.min(min,value);max=Math.max(max,value);}
+ if(min===Infinity){min=0;max=1;}
+ else {const padding=min===max?Math.max(1,Math.abs(min)*0.05):(max-min)*0.08;min-=padding;max+=padding;}
+ if(Number.isFinite(config.y_min))min=config.y_min;
+ if(Number.isFinite(config.y_max))max=config.y_max;
+ if(min>=max){
+  if(Number.isFinite(config.y_min)&&Number.isFinite(config.y_max))throw new Error('y_range');
+  if(Number.isFinite(config.y_min))max=min+Math.max(1,Math.abs(min)*0.05);
+  else min=max-Math.max(1,Math.abs(max)*0.05);
+ }
+ return [min,max];
+}
+// Preserve yRange's padding contract; only the displayed axis uses nice steps.
+function yAxis(series,config={}){
+ if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
+ let [min,max]=yRange(series,config);
+ const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
+ const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
+ const clean=value=>Number(value.toPrecision(15));
+ // Snap only floating-point noise at integral step indices (e.g. 0.3 / 0.1).
+ const index=value=>{const n=value/step,nearest=Math.round(n);return Math.abs(n-nearest)<=Number.EPSILON*Math.max(1,Math.abs(n))*4?nearest:n;};
+ if(!Number.isFinite(config.y_min))min=clean(Math.floor(index(min))*step);
+ if(!Number.isFinite(config.y_max))max=clean(Math.ceil(index(max))*step);
+ const first=Math.ceil(index(min)),last=Math.floor(index(max));
+ const count=Math.max(0,last-first+1);
+ if(!Number.isFinite(count)||count>200||!Number.isFinite(min)||!Number.isFinite(max)||!Number.isFinite(max-min)||!(max>min))throw new Error('y_step_count');
+ const ticks=Array.from({length:count},(_,i)=>clean((first+i)*step));
+ if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
+ return {min,max,step,ticks};
+}
+const zoneFormats=new Map();
+function localParts(t,zone){
+ let format=zoneFormats.get(zone);if(!format){format=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});zoneFormats.set(zone,format);}
+ return Object.fromEntries(format.formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,Number(p.value)]));
+}
+function localEpoch(t,zone){const p=localParts(t,zone);return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);}
+function midnight(nominal,zone){
+ let t=nominal;for(let i=0;i<6;i++){const next=nominal-(localEpoch(t,zone)-t);if(next===t)return t;t=next;}
+ // Midnight can be skipped by a timezone transition. Find the first valid
+ // instant of the requested local date rather than oscillating across it.
+ let low=nominal-36*3600000,high=nominal+36*3600000;
+ while(high-low>1000){const mid=Math.floor((low+high)/2000)*1000,p=localParts(mid,zone);if(Date.UTC(p.year,p.month-1,p.day)>=nominal)high=mid;else low=mid;}
+ return high;
+}
+function periodBounds(t,period,zone='UTC'){
+ zone ||= 'UTC';const p=localParts(t,zone),size={minute:60000,quarter_hour:900000,hour:3600000}[period];
+ if(size){const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second),a=t-(local%size)-(t%1000);return [a,a+size];}
+ let nominal=Date.UTC(p.year,p.month-1,period==='month'?1:p.day);let next;
+ if(period==='week'){const day=new Date(nominal).getUTCDay();nominal-=((day+6)%7)*86400000;next=nominal+7*86400000;}
+ else if(period==='month')next=Date.UTC(p.year,p.month,1);
+ else next=nominal+86400000;
+ return [midnight(nominal,zone),midnight(next,zone)];
+}
+function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
+ if(period==='none')return series;
+ const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
+ return series.map(s=>{if(s.source==='statistics')return s;const points=[];let index=0;
+  for(const [a,b] of bounds){let cursor=a,total=0,duration=0,min=Infinity,max=-Infinity;
+   while(index<s.points.length&&s.points[index].t<=a)index++;
+   let value=index?s.points[index-1].v:null;
+   if(method==='delta'){
+    const first=value;let valid=Number.isFinite(first);
+    // Recorder holds each reading until the next one. Include an exact end
+    // boundary once as this bin's end and the following bin's start.
+    while(index<s.points.length&&s.points[index].t<=b){value=s.points[index++].v;valid&&=Number.isFinite(value);}
+    points.push({t:a,v:valid?value-first:null});continue;
+   }
+   const fragments=[{t:a,valid:value!==null}];
+   while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
+   const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
+   for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
+  }
+  return {id:s.id,points};
+ });
+}
+function displayPoints(points,start,end,bins=1500){
+ let first=0,last=points.length;while(first<last){const mid=(first+last)>>1;if(points[mid].t<start)first=mid+1;else last=mid;}
+ const begin=Math.max(0,first-1);first=begin;last=points.length;while(first<last){const mid=(first+last)>>1;if(points[mid].t<=end)first=mid+1;else last=mid;}
+ const clipped=points.slice(begin,Math.min(points.length,first+1));if(clipped.length<=bins*4)return clipped;
+ const keep=new Set([0,clipped.length-1]);let bin=-1,group=[];
+ const flush=()=>{if(!group.length)return;keep.add(group[0]);keep.add(group.at(-1));let min=group[0],max=min;for(const i of group){if(clipped[i].v<clipped[min].v)min=i;if(clipped[i].v>clipped[max].v)max=i;}keep.add(min);keep.add(max);group=[];};
+ clipped.forEach((p,i)=>{const next=Math.floor((p.t-start)/(end-start)*bins);if(next!==bin){flush();bin=next;}if(p.v===null){flush();for(const j of [i-1,i,i+1])if(j>=0&&j<clipped.length)keep.add(j);}else group.push(i);});flush();
+ return [...keep].sort((a,b)=>a-b).map(i=>clipped[i]);
+}
+function stackSeries(series,start,end){
+ const times=[...new Set([start,...series.flatMap(s=>s.points.map(p=>p.t).filter(t=>t>=start&&t<end))])].sort((a,b)=>a-b);
+ const result=series.map(s=>({id:s.id,points:[]}));
+ for(const t of times){let positive=0,negative=0,missing=false;
+  series.forEach((s,i)=>{const value=valueAt(s.points,t);missing ||= value===null;const base=value<0?negative:positive;
+   result[i].points.push({t,v:missing?null:base+value,base:missing?null:base});
+   if(value!==null){if(value<0)negative+=value;else positive+=value;}
+  });
+ }
+ return result;
+}
+function historyUrl(config,end) {
+ const start=new Date(end-config.hours_to_show*3600000).toISOString();
+ const query=new URLSearchParams({filter_entity_id:config.entities.join(','),end_time:new Date(end).toISOString(),minimal_response:'',no_attributes:'',significant_changes_only:'0'});
+ return `history/period/${encodeURIComponent(start)}?${query}`;
+}
+
+// ../history-graph-card/src/localization.js
+const translations={
+ title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. Each different unit gets its own Y-axis.','Historische periode: 1–8760 uur. Iedere verschillende eenheid krijgt een eigen Y-as.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
+Object.assign(translations,{
+ show_title:['Show title','Titel tonen'],
+ data_source:['Data source','Gegevensbron'],auto:['Automatic','Automatisch'],history:['Raw history','Ruwe historie'],statistics:['Statistics','Statistics'],
+ data_sourceHelper:['Automatic: statistics beyond 48 hours, raw history otherwise. Unsupported sensors fall back to history. Statistics use hour/day/week/month summaries (None uses hour); minute, quarter-hour and Delta require history.','Automatisch: statistics boven 48 uur, anders ruwe historie. Sensoren zonder ondersteuning vallen terug op historie. Statistics gebruikt uur/dag/week/maand (Geen gebruikt uur); minuut, kwartier en Delta vereisen historie.'],
+ statistics_config:['Statistics requires hour, day, week or month (None uses hour), and minimum, maximum or average. Choose History for minute, quarter-hour or Delta.','Statistics vereist uur, dag, week of maand (Geen gebruikt uur), met minimum, maximum of gemiddelde. Kies Historie voor minuut, kwartier of Delta.'],
+ statistics_unavailable:['Statistics unavailable for a selected sensor or its unit. Choose Automatic or History.','Statistics ontbreekt voor een gekozen sensor of zijn eenheid. Kies Automatisch of Historie.'],
+ zoom:['Zoom','Zoom'],zoom_in:['Zoom in','Inzoomen'],zoom_out:['Zoom out','Uitzoomen'],zoom_reset:['Reset zoom','Zoom herstellen'],
+ aggregation_period:['Aggregation period','Aggregatieperiode'],aggregation_method:['Aggregation method','Aggregatiemethode'],none:['None (raw history)','Geen (ruwe historie)'],minute:['Minute','Minuut'],quarter_hour:['Quarter hour','Kwartier'],hour:['Hour','Uur'],day:['Day','Dag'],week:['Week (Monday)','Week (maandag)'],month:['Month','Maand'],min:['Minimum','Minimum'],max:['Maximum','Maximum'],avg:['Time-weighted average','Tijdgewogen gemiddelde'],
+ aggregation_periodHelper:['Applied separately to every sensor in the Home Assistant timezone. Zoom does not change it.','Per sensor toegepast in de Home Assistant-tijdzone. Zoom verandert dit niet.'],
+ aggregation_methodHelper:['AVG weights numeric values by their recorded held duration; unavailable time is excluded.','AVG weegt numerieke waarden met hun geregistreerde duur; niet-beschikbare tijd wordt uitgesloten.'],
+ graph_mode:['Graph mode','Grafiekmodus'],lines:['Separate lines','Losse lijnen'],stacked:['Stacked sums','Gestapelde sommen'],
+ series_options:['Sensor names and colors','Sensornamen en kleuren'],entity:['Sensor','Sensor'],name:['Custom name','Eigen naam'],
+ entitiesHelper:['Set name, fixed color or 2–32 color stops in each sensor entry. Sensor settings override shared colors; its own gradient overrides its fixed color.','Stel naam, vaste kleur of 2–32 kleurovergangen in per sensorregel. Sensorinstellingen gaan voor algemene kleuren; een eigen gradiënt gaat voor de eigen vaste kleur.'],
+ sync_hover:['Synchronize hover','Hover synchroniseren'],hover_sync_group:['Hover synchronization group','Hover-synchronisatiegroep'],
+ sync_hoverHelper:['Shares the selected time with other Eleven graphs on this page.','Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.'],
+ hover_sync_groupHelper:['Cards with the same group follow each other. Empty uses the default group.','Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'],
+ line_interpolation:['Line interpolation','Lijnverloop'],interpolation_smooth:['Smooth','Vloeiend'],interpolation_linear:['Linear','Recht'],interpolation_step:['Stepped','Trapvormig'],
+ line_interpolationHelper:['Display only: connects recorded points. Unavailable gaps remain gaps.','Alleen weergave: verbindt geregistreerde punten. Niet-beschikbare waarden blijven gaten.'],
+ y_step_error:['Invalid Y-axis step: enter a finite positive number or leave it empty for automatic steps.','Ongeldige stapgrootte Y-as: voer een eindig positief getal in of laat leeg voor automatische stappen.'],
+ y_step_count:['Y-axis step cannot be drawn (maximum 200 ticks or numeric precision exceeded). Increase the step or narrow the Y-axis bounds.','Stapgrootte Y-as kan niet worden getekend (maximaal 200 maatstreepjes of numerieke precisie overschreden). Vergroot de stap of verklein het Y-asbereik.'],
+ align_zero:['Align zero points','Nulpunten uitlijnen'],
+ align_zeroHelper:['Align zero on negative Y-axes. Explicit first-axis bounds take priority.','Zet de nulpunten van negatieve Y-assen op dezelfde hoogte. Handmatige grenzen van de eerste as gaan voor.'],
+ y_axis:['Y-axis','Y-as'],y_step:['Y-axis step','Stapgrootte Y-as'],
+ y_stepHelper:['Optional positive tick interval in the sensor unit. Empty uses round 1/2/5 steps automatically. Maximum 200 ticks; increase the step or narrow the bounds if exceeded.','Optionele positieve stapgrootte in de sensoreenheid. Leeg kiest automatisch ronde 1/2/5-stappen. Maximaal 200 maatstreepjes; vergroot de stap of verklein het bereik bij overschrijding.'],
+ y_min:['Y-axis minimum','Minimum Y-as'],y_max:['Y-axis maximum','Maximum Y-as'],
+ y_minHelper:['Optional, in the first sensor’s unit. Empty scales automatically. Other units have independent automatic axes.','Optioneel, in de eenheid van de eerste sensor. Leeg schaalt automatisch. Andere eenheden hebben eigen automatische assen.'],
+ y_maxHelper:['Optional, for the first sensor’s unit. Empty scales automatically. Must exceed the minimum.','Optioneel, voor de eenheid van de eerste sensor. Leeg schaalt automatisch. Moet hoger zijn dan het minimum.'],
+ appearance:['Line and fill','Lijn en vulling'],line_style:['Line style','Lijnstijl'],line_width:['Line width','Lijndikte'],line_color:['Fixed line color','Vaste lijnkleur'],show_fill:['Fill below line','Vulling onder lijn'],fill_opacity:['Fill opacity','Dekking vulling'],fill_fade:['Fade fill','Vulling vervagen'],show_hover_line:['Show hover guide','Aanwijslijn tonen'],gradient_mode:['Color transitions','Kleurovergang'],gradient_stops:['Color stops','Kleurovergangen'],stop_value:['Sensor value','Sensorwaarde'],stop_color:['Color','Kleur'],solid:['Solid','Doorgetrokken'],dashed:['Dashed','Gestreept'],dotted:['Dotted','Gestippeld'],smooth:['Smooth gradient','Vloeiende gradiënt'],steps:['Hard transitions','Harde overgangen'],
+ fill_color:['Fixed fill color','Vaste vulkleur'],fill_colorHelper:['Optional. Empty follows the line color or gradient.','Optioneel. Leeg volgt de lijnkleur of gradiënt.'],
+ hours_to_showHelper:translations.hoursHelper,
+ line_styleHelper:['Empty preserves the distinct default styles per sensor.','Leeg behoudt de verschillende standaard lijnstijlen per sensor.'],
+ line_colorHelper:['Optional. Empty preserves sensor colors. Color stops take priority.','Optioneel. Leeg behoudt sensorkleuren. Kleurovergangen hebben voorrang.'],
+ gradient_stopsHelper:['Add 2–32 distinct sensor values and colors. Values use the sensor unit, not percentages. Empty disables the gradient.','Voeg 2–32 unieke sensorwaarden met kleuren toe. Waarden gebruiken de sensoreenheid, geen percentages. Leeg schakelt de gradiënt uit.'],
+ fill_fadeHelper:['Fades the fill towards the bottom of the graph.','Laat de vulling naar de onderkant van de grafiek vervagen.']
+});
+Object.assign(translations,{
+ graph_settings:['Graph','Grafiek'],show_legend:['Show legend','Legenda tonen'],data_processing:['Data processing','Dataverwerking'],series_line:['Line','Lijn'],series_fill:['Fill','Vulling'],
+ visible:['Show by default','Standaard tonen'],visibleHelper:['Initial visibility. Click the sensor in the legend to show or hide it temporarily.','Beginweergave. Klik op de sensor in de legenda om deze tijdelijk te tonen of verbergen.'],show_sensor:['Show','Toon'],hide_sensor:['Hide','Verberg'],no_visible:['All sensors are hidden. Enable a sensor in the legend.','Alle sensoren zijn verborgen. Zet een sensor aan via de legenda.'],
+ color_mode:['Line color','Lijnkleur'],color_fixed:['Fixed color','Vaste kleur'],color_gradient:['Color stops','Kleurovergangen'],color:['Line color','Lijnkleur'],
+ fill_mode:['Fill color','Vulkleur'],fill_line:['Follow line','Volg lijn'],fill_own:['Own color','Eigen kleur'],
+ add_sensor:['Add sensor','Sensor toevoegen'],new_sensor:['New sensor','Nieuwe sensor'],add_sensorHelper:['Add a sensor to configure its name, line and fill.','Voeg een sensor toe om naam, lijn en vulling in te stellen.'],
+ sensor_up:['Move up','Omhoog'],sensor_down:['Move down','Omlaag'],sensor_remove:['Remove','Verwijderen'],
+ color_modeHelper:['Choose a fixed color or color stops based on measured values.','Kies een vaste kleur of kleurovergangen op basis van meetwaarden.'],
+ fill_modeHelper:['Follow line uses this sensor’s line color, including its gradient. Own color changes only the fill.','Volg lijn gebruikt de lijnkleur van deze sensor, inclusief de gradiënt. Eigen kleur verandert alleen de vulling.'],
+ gradient_stopsHelper:['Set 2–32 distinct values in the sensor unit, not percentages. Adjust the initial values to your sensor range.','Stel 2–32 unieke waarden in de sensoreenheid in, geen percentages. Pas de beginwaarden aan op het bereik van je sensor.'],
+ line_styleHelper:['Only changes this sensor’s line.','Verandert alleen de lijn van deze sensor.'],fill_colorHelper:['Only used when Own color is selected.','Alleen gebruikt wanneer Eigen kleur is gekozen.']
+});
+Object.assign(translations,{
+ line_style_source:['Line appearance','Lijnopmaak'],line_style_own:['Own appearance','Eigen opmaak'],line_style_follow:['Follow','Volg'],
+ line_style_sourceHelper:['Follow another sensor’s width, line style and interpolation. Color and fill remain independent. Own appearance detaches with the current settings.','Volg dikte, lijnstijl en lijnverloop van een andere sensor. Kleur en vulling blijven eigen. Eigen opmaak neemt de huidige instellingen mee.'],
+ line_style_source_error:['Invalid line appearance source: choose another sensor on this card, without circular links.','Ongeldige bron voor lijnopmaak: kies een andere sensor op deze kaart, zonder kringverwijzingen.']
+});
+translations.config=['Invalid configuration: check sensors, hours, Y-axis bounds, appearance and color stops.','Ongeldige configuratie: controleer sensoren, uren, Y-asgrenzen, lijnopties en kleurovergangen.'];
+function language(hass){return String(hass?.locale?.language??hass?.language??'en').toLowerCase().startsWith('nl')?'nl':'en';}
+function text(key,lang){return translations[key]?.[lang==='nl'?1:0]??key;}
+function number(value,lang,axis=false){
+ const small=value!==0&&Math.abs(value)<0.01;
+ return new Intl.NumberFormat(lang==='nl'?'nl-NL':'en-GB',{
+  ...(axis?{maximumSignificantDigits:15}:small?{maximumSignificantDigits:4}:{maximumFractionDigits:2}),
+  ...(value!==0&&(Math.abs(value)<0.0001||axis&&Math.abs(value)>=1e6)?{notation:'scientific'}:{})
+ }).format(Object.is(value,-0)?0:value);
+}
+function time(value,lang,timeZone,full=false){return new Intl.DateTimeFormat(lang==='nl'?'nl-NL':'en-GB',{timeZone,hour:'2-digit',minute:'2-digit',hourCycle:'h23',...(full?{day:'numeric',month:'short'}:{})}).format(new Date(value));}
+function escapeHtml(value){return String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');}
+function frontendHass(){return globalThis.document?.querySelector('home-assistant')?.hass;}
+
+// ../history-graph-card/src/eleven.js
+// One playful flyby, then gone until tomorrow.
+const ELF_FLIGHT_MS=4200;
+function elevenDay(date=new Date(),zone){
+ try{return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(date);}catch{return date.toDateString();}
+}
+function isElevenMinute(date=new Date(),zone){
+ let parts;
+ try{parts=new Intl.DateTimeFormat('en-GB',{timeZone:zone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date);}catch{parts=new Intl.DateTimeFormat('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date);}
+ return parts.find(p=>p.type==='hour')?.value==='11'&&parts.find(p=>p.type==='minute')?.value==='11';
+}
+function elevenMarkup(elapsed=0){return `<span class="eleven-elf" aria-hidden="true" style="animation-delay:-${elapsed}ms"><svg viewBox="0 0 64 56" width="48" height="42" fill="none"><g class="elf-wings" stroke="#7dd3fc" stroke-width=".8"><path d="M30 30C9 27 8 5 18 8c8 2 13 15 12 22Z" fill="#e0f2fe" fill-opacity=".85"/><path d="M35 31C35 17 46 4 51 11c5 8-4 19-16 20Z" fill="#f0e7ff" fill-opacity=".8"/><path d="M29 30C9 26 11 42 20 40l9-10ZM36 31c18-8 19 8 10 10Z" fill="#bae6fd" fill-opacity=".65"/><g class="elf-wing-veins" stroke="#ffffff" stroke-opacity=".9" stroke-width=".7"><path d="M29 29 17 12m18 17 13-15M28 32l-11 5m20-4 9 4"/></g></g><g stroke-linecap="round" stroke-linejoin="round"><path d="m28 36-8 9 7 1m8-10 7 8 7-3" stroke="#1e40af" stroke-width="4"/><path d="m20 44-4 3 10 1m17-5 5-4 3 2" stroke="#fbbf24" stroke-width="2"/><path d="M24 36q1-13 8-13t10 13l-7 3-5-3-4 3Z" fill="#2563eb" stroke="#1e40af" stroke-width=".7"/><path d="m27 33 11 1" stroke="#fbbf24" stroke-width="2"/><path d="m25 28-6 5-4-3m24-1 8-6" stroke="#ffd7b5" stroke-width="3"/><path d="m24 20-8-5 4 10m21-5 7-4-4 10" fill="#ffc99f" stroke="#dd996f" stroke-width=".6"/><ellipse cx="32" cy="22" rx="10" ry="9" fill="#ffdfbf"/><path d="M22 20q-1-13 11-13 9 0 9 13l-4-5-3 3-3-3-4 4-2-2Z" fill="#b9652a"/><path d="M21 16Q24 1 40 5l5 5-7-1 3 8Q31 13 21 18Z" fill="#2563eb" stroke="#1e40af" stroke-width=".7"/><path d="M23 17q9-4 17 0" stroke="#fbbf24" stroke-width="2.5"/><circle cx="45" cy="10" r="2.3" fill="#fbbf24"/><circle cx="28" cy="22" r="1.1" fill="#302337"/><path d="m35 22 3-1m-9 6q4 3 7-1" stroke="#793c31" stroke-width="1.3"/><ellipse cx="25" cy="25" rx="2" ry="1" fill="#fb7185" fill-opacity=".6"/><ellipse cx="39" cy="24" rx="1.7" ry="1" fill="#fb7185" fill-opacity=".6"/><path d="m46 24 6-11" stroke="#c48b36" stroke-width="1.4"/></g><g class="elf-sparkles" fill="#fbbf24"><path d="m53 8 1.2 3.8L58 13l-3.8 1.2L53 18l-1.2-3.8L48 13l3.8-1.2Z"/><path d="m9 28 1 3 3 1-3 1-1 3-1-3-3-1 3-1Z"/><circle cx="5" cy="41" r="1.2"/><circle cx="14" cy="23" r=".9"/></g></svg></span>`;}
+function elevenStyles(){return `.eleven-elf{position:absolute;left:0;top:6px;width:48px;height:42px;opacity:0;pointer-events:none;z-index:2;animation:eleven-flyby 4200ms linear both}.eleven-elf svg{display:block}.elf-wings{transform-origin:32px 28px;animation:eleven-flutter .16s ease-in-out infinite alternate}@keyframes eleven-flyby{0%{left:0;transform:translateX(-110%) translateY(8px) rotate(12deg);opacity:0}10%{opacity:.9}30%{transform:translateX(-30%) translateY(-5px) rotate(-8deg)}60%{transform:translateX(-60%) translateY(9px) rotate(8deg);opacity:.9}90%{opacity:.9}100%{left:100%;transform:translateX(10%) translateY(-9px) rotate(-12deg);opacity:0}}@keyframes eleven-flutter{from{transform:scaleX(.7)}to{transform:scaleX(1.1)}}@media(prefers-reduced-motion:reduce){.eleven-elf{animation:none;left:auto;right:10px;opacity:.85}.elf-wings{animation:none}}`;}
+
+// ../history-graph-card/src/library.js
+// Shared browser API for Eleven Cards; only connected cards are retained.
+const ELEVEN_VERSION='0.3.1-local';
+const elevenLibrary=window.elevenCards??={};
+const elevenPreviews=elevenLibrary._elfPreviews??=new Set();
+elevenLibrary.debug??={};
+elevenLibrary.debug.elf=()=>{for(const preview of elevenPreviews)preview();return elevenPreviews.size;};
+if(!elevenLibrary._announced){
+ console.log(`%c Eleven Cards %c v${ELEVEN_VERSION} `,'background:#20252b;color:#ffffff;padding:5px 10px;border-bottom:3px solid #607d94;border-radius:5px 0 0 5px;font-weight:bold','background:#343b43;color:#e5e7eb;padding:5px 10px;border-bottom:3px solid #607d94;border-radius:0 5px 5px 0;font-weight:bold');
+ elevenLibrary._announced=true;
+}
+function registerElfPreview(callback){elevenPreviews.add(callback);}
+function unregisterElfPreview(callback){elevenPreviews.delete(callback);}
+
+// ../history-graph-card/src/history-graph-card.js
+const COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
+const REFRESH_MS=60000;
+// Native controls, with one independently owned appearance form per sensor.
+class HistoryGraphEditor extends HTMLElement {
+ constructor(){super();this.attachShadow({mode:'open'});}
+ _editorConfig(config){return editorConfig(config);}
+ setConfig(config){this._data=this._editorConfig(config);this._render();}
+ set hass(hass){this._hass=hass;this._render();}
+ get hass(){return this._hass;}
+ connectedCallback(){this._render();}
+ _emit(){
+  const data={...this._data,entities:this._data.entities.filter(row=>row.entity)};
+  this.dispatchEvent(new CustomEvent('config-changed',{detail:{config:cardConfig(data)},bubbles:true,composed:true}));
+ }
+ _bind(form,definition,data){
+  form.hass=this._hass;form.schema=definition.schema;form.data=data;
+  form.computeLabel=s=>definition.computeLabel.call(this,s);form.computeHelper=s=>definition.computeHelper.call(this,s);
+ }
+ _render(){
+  if(!this._data||!this._hass)return;
+  if(!this._form){
+   this.shadowRoot.innerHTML=`<style>:host{display:block;min-width:0}h3{font-size:16px;margin:24px 0 12px}details{border:1px solid var(--divider-color);border-radius:var(--ha-card-border-radius,12px);margin:12px 0;min-width:0}summary{cursor:pointer;padding:12px;min-height:44px;box-sizing:border-box;display:flex;align-items:center;gap:10px}summary:focus-visible,button:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}.swatch{width:24px;height:3px;flex:none}.sensor-name{overflow-wrap:anywhere;flex:1;min-width:0}.body{padding:0 12px 12px;min-width:0}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}button{font:inherit;color:var(--primary-text-color);background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:6px;min-height:44px;padding:8px 12px;cursor:pointer}button:disabled{opacity:.45;cursor:default}.remove{margin-left:auto;color:var(--error-color)}.empty{color:var(--secondary-text-color)}</style><ha-form class="graph-form"></ha-form><h3 class="sensors-heading"></h3><div class="sensors"></div><p class="empty"></p><button class="add-sensor" type="button"></button>`;
+   this._form=this.shadowRoot.querySelector('.graph-form');
+   this._form.addEventListener('value-changed',ev=>{ev.stopPropagation();this._data={...this._data,...ev.detail.value,entities:this._data.entities};this._emit();});
+   this.shadowRoot.querySelector('.add-sensor').onclick=()=>{
+    const index=this._data.entities.length;if(index>=8)return;
+    const row=editorConfig({entities:[''],series_options:[{entity:'',color:COLORS[index],line_style:index%2?'dashed':'solid'}]}).entities[0];
+    this._data={...this._data,entities:[...this._data.entities,row]};this._openNew=true;this._render();
+   };
+  }
+  this._bind(this._form,(this.constructor.cardClass??HistoryGraphCard).getConfigForm(),this._data);
+  const lang=language(this._hass),label=key=>text(key,lang),container=this.shadowRoot.querySelector('.sensors');
+  this.shadowRoot.querySelector('.sensors-heading').textContent=label('entities');
+  this.shadowRoot.querySelector('.empty').textContent=this._data.entities.length?'':label('add_sensorHelper');
+  const add=this.shadowRoot.querySelector('.add-sensor');add.textContent=label('add_sensor');add.disabled=this._data.entities.length>=8;
+  // Retain existing details/forms on ordinary edits, so focus and expansion survive.
+  while(container.children.length>this._data.entities.length)container.lastElementChild.remove();
+  this._data.entities.forEach((row,index)=>{
+   let entry=container.children[index];
+   if(!entry){
+    entry=document.createElement('details');entry.className='sensor-entry';
+    entry.innerHTML='<summary><span class="swatch"></span><span class="sensor-name"></span><span aria-hidden="true">▾</span></summary><div class="body"><ha-form class="sensor-form"></ha-form><div class="actions"><button type="button" class="up"></button><button type="button" class="down"></button><button type="button" class="remove"></button></div></div>';
+    container.append(entry);entry.open=this._data.entities.length===1||Boolean(this._openNew);
+    const form=entry.querySelector('ha-form');form.addEventListener('value-changed',ev=>{
+     ev.stopPropagation();const old=this._data.entities[index];const updated={...old,...ev.detail.value};
+     if(updated.color_mode==='gradient'&&!updated.gradient_stops?.length)updated.gradient_stops=[{value:0,color:[33,150,243]},{value:1,color:[231,138,20]}];
+     this._data=updateSeriesRow(this._data,index,updated);this._render();this._emit();
+    });
+    entry.querySelector('.remove').onclick=()=>{this._data=removeSeriesRow(this._data,index);this._render();this._emit();};
+    for(const [key,delta] of [['up',-1],['down',1]])entry.querySelector('.'+key).onclick=()=>{
+     const rows=[...this._data.entities],next=index+delta;if(next<0||next>=rows.length)return;
+     [rows[index],rows[next]]=[rows[next],rows[index]];this._data={...this._data,entities:rows};this._render();this._emit();
+    };
+   }
+   entry.dataset.index=index;
+   const name=row.name||this._hass.states?.[row.entity]?.attributes?.friendly_name||row.entity||label('new_sensor');
+   entry.querySelector('.sensor-name').textContent=name;
+   const cssColor=c=>Array.isArray(c)?`rgb(${c.join(',')})`:c;
+   entry.querySelector('.swatch').style.background=row.color_mode==='gradient'&&row.gradient_stops.length?`linear-gradient(to right,${row.gradient_stops.map(s=>cssColor(s.color)).join(',')})`:cssColor(row.color);
+   for(const key of ['up','down','remove']){const button=entry.querySelector('.'+key);button.textContent=label('sensor_'+key);button.setAttribute('aria-label',`${label('sensor_'+key)}: ${name}`);button.disabled=key==='up'?index===0:key==='down'?index===this._data.entities.length-1:false;}
+   this._bind(entry.querySelector('ha-form'),(this.constructor.cardClass??HistoryGraphCard).getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
+  });
+  this._openNew=false;
+ }
+}
+class HistoryGraphCard extends HTMLElement {
+ static async getConfigElement(){
+  // The built-in Entities editor lazily loads ha-form on a fresh frontend.
+  if(!customElements.get('ha-form')){
+   const helpers=await window.loadCardHelpers();const card=await helpers.createCardElement({type:'entities',entities:[]});
+   await card.constructor.getConfigElement();await customElements.whenDefined('ha-form');
+  }
+  if(!customElements.get('eleven-history-graph-editor'))customElements.define('eleven-history-graph-editor',HistoryGraphEditor);
+  return document.createElement('eleven-history-graph-editor');
+ }
+ constructor(){super();this.attachShadow({mode:'open'});this._generation=0;this._timer=null;this._connected=false;this._status='loading';this._series=[];this._outside=e=>{const chart=this.shadowRoot.querySelector('.chart');if(chart&&!e.composedPath().includes(chart)&&!SharedGraph.hoverSourceInEvent(this,e))this._hideTooltip?.();};}
+ static _formContract(schema){
+  return {schema,computeLabel:function(item){return text(item?.name==='title'?'titleField':item?.name??'',language(this?.hass??frontendHass()));},computeHelper:function(item){const key=`${item?.name}Helper`,value=text(key,language(this?.hass??frontendHass()));return value===key?undefined:value;}};
+ }
+ static getConfigForm(){
+  const label=key=>text(key,language(frontendHass()));
+  const select=keys=>({select:{mode:'dropdown',get options(){return keys.map(value=>({value,label:label(value)}));}}});
+  return this._formContract([
+   {name:'title',selector:{text:{}}},
+   {name:'show_title',default:true,selector:{boolean:{}}},
+   {name:'hours_to_show',selector:{number:{min:1,max:8760,step:0.5,mode:'box'}}},
+   {type:'expandable',name:'graph_settings',get title(){return label('graph_settings');},flatten:true,schema:[
+    {name:'graph_mode',default:'lines',selector:select(['lines','stacked'])},
+    {name:'show_legend',default:true,selector:{boolean:{}}},
+    {name:'show_hover_line',default:true,selector:{boolean:{}}},
+    {name:'sync_hover',default:true,selector:{boolean:{}}},
+    {name:'hover_sync_group',selector:{text:{}}}
+   ]},
+   {type:'expandable',name:'y_axis',get title(){return label('y_axis');},flatten:true,schema:[
+    {name:'y_min',selector:{number:{step:'any',mode:'box'}}},
+    {name:'y_max',selector:{number:{step:'any',mode:'box'}}},
+    {name:'y_step',selector:{number:{step:'any',mode:'box'}}},
+    {name:'align_zero',default:true,selector:{boolean:{}}}
+   ]},
+   {type:'expandable',name:'data_processing',get title(){return label('data_processing');},flatten:true,schema:[
+    {name:'data_source',default:'auto',selector:select(['auto','history','statistics'])},
+    {name:'aggregation_period',default:'none',selector:select(['none','minute','quarter_hour','hour','day','week','month'])},
+    {name:'aggregation_method',default:'avg',selector:select(['min','max','avg'])}
+   ]}
+  ]);
+ }
+ static getSeriesConfigForm(row={},rows=[]){
+  const label=key=>text(key,language(frontendHass()));
+  const select=(keys,prefix='')=>({select:{mode:'dropdown',get options(){return keys.map(value=>({value,label:label(prefix+value)}));}}});
+  const sources=lineStyleSources(rows,row);
+  const sourceSelector={select:{mode:'dropdown',options:[{value:'',label:label('line_style_own')},...sources.map(s=>({value:s.entity,label:label('line_style_follow')+' '+(s.name||frontendHass()?.states?.[s.entity]?.attributes?.friendly_name||s.entity)}))]}};
+  const gradients={object:{multiple:true,label_field:'value',fields:{value:{get label(){return label('stop_value');},required:true,selector:{number:{step:'any',mode:'box'}}},color:{get label(){return label('stop_color');},required:true,selector:{color_rgb:{}}}}}};
+  return this._formContract([
+   {name:'entity',required:true,selector:{entity:{domain:'sensor'}}},
+   {name:'name',selector:{text:{}}},
+   {name:'visible',default:true,selector:{boolean:{}}},
+   {type:'expandable',name:'series_line',get title(){return label('series_line');},flatten:true,expanded:true,schema:[
+    ...(rows.filter(s=>s.entity).length>1?[{name:'line_style_source',selector:sourceSelector}]:[]),
+    ...(!row.line_style_source?[
+     {name:'line_width',required:true,selector:{number:{min:1,max:8,step:0.5,mode:'box',unit_of_measurement:'px'}}},
+     {name:'line_style',required:true,selector:select(['solid','dashed','dotted'])},
+     {name:'line_interpolation',required:true,default:'step',selector:select(['smooth','linear','step'],'interpolation_')}
+    ]:[]),
+    {name:'color_mode',required:true,selector:select(['fixed','gradient'],'color_')},
+    ...(row.color_mode==='gradient'?[
+     {name:'gradient_mode',required:true,selector:select(['smooth','steps'])},
+     {name:'gradient_stops',selector:gradients}
+    ]:[{name:'color',selector:{color_rgb:{}}}])
+   ]},
+   {type:'expandable',name:'series_fill',get title(){return label('series_fill');},flatten:true,expanded:true,schema:[
+    {name:'show_fill',selector:{boolean:{}}},
+    ...(row.show_fill?[
+     {name:'fill_opacity',selector:{number:{min:0,max:1,step:0.01,mode:'slider'}}},
+     {name:'fill_fade',selector:{boolean:{}}},
+     {name:'fill_mode',required:true,selector:select(['line','own'],'fill_')},
+     ...(row.fill_mode==='own'?[{name:'fill_color',selector:{color_rgb:{}}}]:[])
+    ]:[])
+   ]}
+  ]);
+ }
+ _seriesAppearance(index){
+  const row=seriesAppearance(this._config,index);
+  return {...row,stops:row.color_mode==='gradient'?row.gradient_stops:[],mode:row.gradient_mode,chosen:row.color};
+ }
+ _appearance(index,value){
+  const {stops,mode,chosen,line_style:style,line_width:width}=this._seriesAppearance(index);
+  const fixed=Array.isArray(chosen)?`rgb(${chosen.join(',')})`:chosen;
+  const color=gradientColor(stops,value,mode)??fixed??COLORS[index];
+  return {color:color||COLORS[index],stroke:stops.length?`url(#history-colors-${index})`:fixed||COLORS[index],...graphLineStyle(style,width)};
+ }
+ _gradient(min,max,y){
+  const c=this._config;
+  const gradients=c.entities.map((_,index)=>{
+   if(!this._isSeriesVisible(index))return '';
+   const {stops,mode}=this._seriesAppearance(index);if(!stops.length)return '';
+   if(this._axes){({min,max}=this._axes[this._seriesAxes[index]]);y=v=>(max-v)/(max-min)*300;}
+   const values=[max,...stops.map(s=>s.value).filter(v=>v>min&&v<max).reverse(),min];
+   const markup=values.map((v,i)=>{const offset=y(v)/3;const high=gradientColor(stops,v,mode);const low=mode==='steps'&&i>0&&i<values.length-1?gradientColor(stops,v-Math.max(1,Math.abs(v))*Number.EPSILON*4,mode):high;return `<stop offset="${offset}%" stop-color="${high}"/>${low!==high?`<stop offset="${offset}%" stop-color="${low}"/>`:''}`;}).join('');
+   return `<linearGradient id="history-colors-${index}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="300">${markup}</linearGradient>`;
+  }).join('');
+  return `<defs>${gradients}${c.entities.some((_,i)=>{const a=this._seriesAppearance(i);return a.show_fill&&a.fill_fade;})?'<linearGradient id="history-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="white"/><stop offset="1" stop-color="black"/></linearGradient><mask id="history-fill-fade" maskUnits="userSpaceOnUse" x="0" y="0" width="1000" height="300"><rect width="1000" height="300" fill="url(#history-fade)"/></mask>':''}</defs>`;
+ }
+ _line(points,end,x,y,index=0){return SharedGraph.path(points.map(p=>[x(p.t),p.v===null?null:y(p.v)]),this._seriesAppearance(index).line_interpolation,end===undefined?undefined:x(end));}
+ _area(points,x,y,index=0){
+  const interpolation=this._seriesAppearance(index).line_interpolation;
+  let path='',segment=[];
+  const close=until=>{if(segment.length){
+   const top=this._line(segment,until,x,y,index);let bottom=`L ${x(until)} 300 L ${x(segment[0].t)} 300`;
+   if(this._config.graph_mode==='stacked'){
+    const reverse=[{t:until,v:segment.at(-1).base}];
+    for(let i=segment.length-1;i>=0;i--){const p=segment[i];reverse.push({t:p.t,v:p.base});if(interpolation==='step'&&i>0)reverse.push({t:p.t,v:segment[i-1].base});}
+    bottom=SharedGraph.path(reverse.map(p=>[x(p.t),y(p.v)]),interpolation==='step'?'linear':interpolation).replace(/^M /,'L ');
+   }
+   path+=`${path?' ':''}${top} ${bottom} Z`;segment=[];
+  }};
+  for(const point of points){if(point.v===null)close(point.t);else segment.push(point);}close(Math.max(this._viewEnd??this._end,segment.at(-1)?.t??0));return path;
+ }
+ static getStubConfig(hass){const ids=Object.keys(hass?.states??{}).filter(id=>id.startsWith('sensor.')&&Number.isFinite(Number(hass.states[id].state))&&hass.states[id].state!=='');return {entities:ids.slice(0,1),hours_to_show:24};}
+ getGridOptions(){return {rows:6,columns:12,min_rows:4,min_columns:6};}
+ getCardSize(){return 6;}
+ _isSeriesVisible(index){const id=this._config.entities[index];return this._visibility?.get(id)??(this._config.series_options.find(s=>s.entity===id)?.visible??true);}
+ _toggleSeries(id){
+  const index=this._config.entities.indexOf(id);if(index<0)return;
+  this._visibility??=new Map();this._visibility.set(id,!this._isSeriesVisible(index));this._hideTooltip();this._render();
+  queueMicrotask(()=>this.shadowRoot.querySelector?.(`button[data-series="${id}"]`)?.focus({preventScroll:true}));
+ }
+ setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message==='y_step'?'y_step_error':error.message==='y_step_count'?'y_step_count':error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}
+  const previous=this._config,visibility=this._visibility;
+  this._visibility=new Map(validated.entities.map(id=>{const initial=validated.series_options.find(s=>s.entity===id)?.visible??true,old=previous?.series_options.find(s=>s.entity===id)?.visible??true;return [id,initial===old&&visibility?.has(id)?visibility.get(id):initial];}));
+  SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
+ set hass(hass){this._hass=hass;if(!this._config)return;let signature;try{const meta=seriesMetadata(hass,this._config.entities);signature=JSON.stringify([meta,language(hass),hass.config?.time_zone]);}catch(e){signature=e.message;}
+  if(signature!==this._signature){this._signature=signature;this._render();}
+  if(this._connected&&!this._started)this._refresh();
+ }
+ get hass(){return this._hass;}
+ _syncElf(){
+  clearTimeout(this._elfTimer);this._elfTimer=null;
+  const parent=this.shadowRoot.querySelector('.card-content');
+  const now=Date.now(),zone=this._hass?.config?.time_zone,day=elevenDay(new Date(),zone);
+  const dayKey='eleven-cards:elf-day';
+  try{this._elfDay=window.sessionStorage?.getItem(dayKey)??this._elfDay;}catch{}
+  if(parent&&isElevenMinute(new Date(),zone)&&this._elfDay!==day){this._elfDay=day;this._elfPreviewUntil=now+ELF_FLIGHT_MS;try{window.sessionStorage?.setItem(dayKey,day);}catch{}}
+  if(parent){const elf=parent.querySelector('.eleven-elf');const visible=now<(this._elfPreviewUntil??0);if(visible&&!elf)parent.insertAdjacentHTML('beforeend',elevenMarkup(Math.max(0,now-(this._elfPreviewUntil-ELF_FLIGHT_MS))));else if(!visible&&elf)elf.remove();}
+  if(this._connected){this._elfTimer=setTimeout(()=>this._syncElf(),Math.min(60000-now%60000,this._elfPreviewUntil>now?this._elfPreviewUntil-now:60000));this._elfTimer.unref?.();}
+ }
+ connectedCallback(){this._connected=true;SharedGraph.connectHover(this,t=>this._receiveHover(t));this._elfPreview??=()=>{this._elfPreviewUntil=Date.now()+ELF_FLIGHT_MS;this.shadowRoot.querySelector('.eleven-elf')?.remove();this._syncElf();};registerElfPreview(this._elfPreview);document.addEventListener('pointerdown',this._outside);this._syncElf();if(this._config&&this._hass)this._refresh();}
+ disconnectedCallback(){SharedGraph.disconnectHover(this);this._connected=false;unregisterElfPreview(this._elfPreview);this._elfPreviewUntil=0;this._generation++;this._inFlight=false;this._started=false;clearTimeout(this._timer);this._timer=null;clearTimeout(this._elfTimer);this._elfTimer=null;document.removeEventListener('pointerdown',this._outside);}
+ async _refresh(){
+  if(!this._connected||!this._config||!this._hass||this._inFlight)return;
+  clearTimeout(this._timer);this._timer=null;const generation=++this._generation;this._inFlight=true;this._started=true;
+  const config=this._config,hass=this._hass;const end=Date.now(),start=end-config.hours_to_show*3600000;
+  this._status='loading';this._render();let timeout;
+  try{
+   seriesMetadata(hass,config.entities);
+   const response=await Promise.race([loadHistorySeries(hass,config,start,end),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
+   if(generation!==this._generation||!this._connected)return;
+   seriesMetadata(this._hass,config.entities);
+   this._series=response;this._rawSeries=this._series;this._start=start;this._end=end;
+   this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';
+  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
+  finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),REFRESH_MS);this._timer.unref?.();}}
+ }
+ _getGraphAxes(series,meta,visible){return graphAxes(series,meta,this._config,this._start,this._end,visible);}
+ _render(){
+  if(!this._config)return;const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
+  let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
+  const title=this._config.title??text('title',lang);let content='';
+  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
+  else{
+   this._rawSeries??=this._series;
+   const key=JSON.stringify([this._start,this._end,this._zone,this._config.aggregation_period,this._config.aggregation_method]);
+   if(this._processedRaw!==this._rawSeries||this._processedKey!==key){this._series=aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);this._processedRaw=this._rawSeries;this._processedKey=key;}
+   const visible=this._config.entities.map((_,i)=>this._isSeriesVisible(i)),anyVisible=visible.some(Boolean);
+   const axisKey=JSON.stringify([meta.items.map(item=>item.unit),this._config.graph_mode,this._config.y_min,this._config.y_max,this._config.y_step,this._config.align_zero,visible]);
+   let grouped;try{if(this._axisSource!==this._series||this._axisKey!==axisKey){this._axisGroups=this._getGraphAxes(this._series,meta,visible);this._axisSource=this._series;this._axisKey=axisKey;}grouped=this._axisGroups;}catch(error){if(!['y_step','y_step_count'].includes(error.message))throw error;this._status=error.message==='y_step'?'y_step_error':error.message;this._range=null;this._render();return;}
+   this._meta=meta;this._axes=grouped.axes;this._seriesAxes=grouped.seriesAxes;this._plotSeries=grouped.plotSeries;
+   const {min,max}=this._axes[0];this._range=[min,max];
+   const extra=this._axes.length-1,mixed=new Set(meta.items.map(item=>item.unit)).size>1;
+   this._viewStart=Math.max(this._start,this._viewport?.[0]??this._start);this._viewEnd=Math.min(this._end,this._viewport?.[1]??this._end);
+   if(this._viewEnd<=this._viewStart){this._viewport=null;this._viewStart=this._start;this._viewEnd=this._end;}
+   const x=t=>(t-this._viewStart)/(this._viewEnd-this._viewStart)*1000,y=v=>(max-v)/(max-min)*300;
+   const axes=this._axes.map((axis,index)=>{
+    const position=index?`left:auto;right:calc(12px + ${index-1} * var(--axis-column));width:var(--axis-column);max-width:var(--axis-column);text-align:right;`:'';
+    const unit=mixed?`<span class="axis-unit" style="${position}">${escapeHtml(axis.unit||'—')}</span>`:'';
+    return unit+[...axis.ticks].reverse().map(value=>{const ratio=(axis.max-value)/(axis.max-axis.min);return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px);${position}">${escapeHtml(number(value,lang,true))}</span>`;}).join('');
+   }).join('');
+   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
+
+   const display=this._plotSeries.map(s=>({...s,points:displayPoints(s.points,this._viewStart,this._viewEnd)}));
+   const seriesY=i=>{const a=this._axes[this._seriesAxes[i]];return v=>(a.max-v)/(a.max-a.min)*300;};
+   this._graph??=new SharedGraph();
+   const graph=this._graph.render(this,{
+    viewBox:'0 0 1000 300',defs:this._gradient(min,max,y),
+    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!visible[i]||!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,seriesY(i),i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
+    lines:display.flatMap((s,i)=>visible[i]?[{d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,seriesY(i),i),className:'series-line',entity:s.id,appearance:this._appearance(i)}]:[]),
+   });
+   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
+   const missing=meta.items.filter((_,i)=>visible[i]&&!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
+   content=`${this._config.show_legend?`<div class="legend">${legend}${mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`}</div>`:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
+  }
+  const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang});
+  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${controls}${content}</div></ha-card>`;
+  this.shadowRoot.querySelectorAll?.('[data-series]').forEach(button=>button.onclick=()=>this._toggleSeries(button.dataset.series));
+  this.shadowRoot.querySelectorAll?.('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:0.5,out:2,reset:0}[button.dataset.zoom]));
+  this._graph?.restore(this);
+  const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this._pinned=false;this._bindInteractions();
+  this._syncElf();SharedGraph.restoreHover(this);
+ }
+ _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-this._config.hours_to_show*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
+ _zoom(factor){
+  this._hideTooltip();if(!factor)this._viewport=null;
+  else{const a=this._viewStart??this._start,b=this._viewEnd??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2;
+   const start=Math.max(this._start,Math.min(this._end-width,center-width/2));this._viewport=[start,start+width];}
+  this._render();
+ }
+ _bindInteractions(){
+  const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
+  const fromPointer=e=>{const box=chart.querySelector('.plot').getBoundingClientRect();return (this._viewStart??this._start)+Math.max(0,Math.min(1,(e.clientX-box.left)/box.width))*((this._viewEnd??this._end)-(this._viewStart??this._start));};
+  let drag=null;const selection=chart.querySelector('.zoom-selection');
+  chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){const plot=chart.querySelector('.plot').getBoundingClientRect();if(selection){selection.hidden=false;selection.style.left=`${Math.max(0,Math.min(drag.x,e.clientX)-plot.left)/plot.width*100}%`;selection.style.width=`${Math.min(plot.width,Math.abs(e.clientX-drag.x))/plot.width*100}%`;}}else if(!this._pinned&&!e.target?.closest?.('.tooltip'))this._showTooltip(fromPointer(e));};
+  chart.onpointerdown=e=>{if(e.target?.closest?.('.tooltip'))return;this._pinned=true;this._showTooltip(fromPointer(e));if(e.pointerType==='mouse'&&(e.button??0)===0){drag={x:e.clientX,t:fromPointer(e)};chart.setPointerCapture?.(e.pointerId);}};
+  chart.onpointerup=e=>{if(selection)selection.hidden=true;if(drag){const first=drag;drag=null;if(Math.abs(e.clientX-first.x)>=6){const last=fromPointer(e),a=Math.min(first.t,last),b=Math.max(first.t,last);if(b-a>=60000){this._hideTooltip();this._viewport=[a,b];this._render();}}}};
+  chart.onpointercancel=()=>{drag=null;if(selection)selection.hidden=true;};
+  chart.onpointerleave=()=>{if(!this._pinned)this._hideTooltip();};chart.onblur=()=>this._hideTooltip();
+  chart.onkeydown=e=>{
+   if(e.key==='Escape'){this._hideTooltip();return;}
+   if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();
+   const a=this._viewStart??this._start,b=this._viewEnd??this._end;
+   const timeline=[...new Set([a,...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t):[]).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
+   let index=timeline.findIndex(t=>t>=(this._cursor??this._start));if(index<0)index=timeline.length-1;
+   if(e.key==='Home')index=0;else if(e.key==='End')index=timeline.length-1;else index=Math.max(0,Math.min(timeline.length-1,index+(e.key==='ArrowRight'?1:-1)));
+   this._pinned=true;this._showTooltip(timeline[index]);
+  };
+ }
+ _receiveHover(timestamp){if(timestamp===null||timestamp<(this._viewStart??this._start)||timestamp>(this._viewEnd??this._end)){this._hideTooltip(false);return;}this._showTooltip(timestamp,false);}
+ _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._cursor=null;this._pinned=false;const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;const tooltip=chart.querySelector('.tooltip');if(tooltip)tooltip.hidden=true;const markers=chart.querySelector('.markers');if(markers)markers.innerHTML='';const guide=chart.querySelector('.guide');if(guide)guide.hidden=true;}
+ _showTooltip(timestamp,publish=true){
+  if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
+  const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;this._cursor=timestamp;
+  const tooltip=chart.querySelector('.tooltip'),plot=chart.querySelector('.plot');const box=chart.getBoundingClientRect(),p=plot.getBoundingClientRect();
+  const px=p.left-box.left+(timestamp-(this._viewStart??this._start))/((this._viewEnd??this._end)-(this._viewStart??this._start))*p.width;
+  const positions=[];
+  const rows=this._series.flatMap((s,i)=>{if(!this._isSeriesVisible(i))return [];const {min,max}=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return [`${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.items[i].unit??this._meta.unit}`}`];});
+  if(!rows.length){this._hideTooltip(publish);return;}
+  const colors=this._series.flatMap((s,i)=>this._isSeriesVisible(i)?[this._appearance(i,valueAt(s.points,timestamp)).color]:[]);
+  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map((row,i)=>`<span><i style="background:${escapeHtml(colors[i])}"></i><b>${escapeHtml(row)}</b></span>`).join('')}`;tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';
+  tooltip.style.maxHeight=`${Math.max(0,box.height-8)}px`;
+  const measured=tooltip.getBoundingClientRect();let left=Math.max(4,Math.min(box.width-measured.width-4,px+14));
+  if(px+14+measured.width>box.width-4)left=Math.max(4,px-measured.width-14);
+  const candidates=[4,Math.max(4,box.height-measured.height-4)];
+  const overlaps=top=>positions.filter(m=>m.x>left-9&&m.x<left+measured.width+9&&m.y>top-9&&m.y<top+measured.height+9).length;
+  const top=candidates.sort((a,b)=>overlaps(a)-overlaps(b))[0];tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;
+  chart.querySelector('.markers').innerHTML=positions.map(m=>`<i class="hover-dot" style="left:${m.x}px;top:${m.y}px;border-color:${m.color}"></i>`).join('');
+  const guide=chart.querySelector('.guide');if(guide){guide.hidden=false;guide.style.left=`${px}px`;}
+  chart.querySelector('.sr-only').textContent=`${time(timestamp,this._lang,this._zone,true)}. ${rows.join('. ')}`;
+  if(publish)SharedGraph.publishHover(this,timestamp);
+ }
+ _styles(){return `
+ :host{display:block;height:100%;min-width:0;container-type:inline-size;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
+ ha-card{height:100%;display:flex;flex-direction:column;background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,inherit)}
+ .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;padding:16px 16px 12px;line-height:1.4}
+ ${cardHeaderStyles()}
+ .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:0 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
+ .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;border:0;padding:4px 0;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer;border-radius:4px}.legend-item[aria-pressed="false"]{opacity:.45}.legend-item[aria-pressed="false"]>span{text-decoration:line-through}.legend-item:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}.empty-visibility{position:absolute;inset:22px 12px 30px 44px;display:flex;align-items:center;justify-content:center;color:var(--secondary-text-color);font-size:12px;text-align:center;pointer-events:none}
+ .legend i{width:15px;flex-shrink:0;border-top:3px solid var(--series-color)}.unit{margin-left:auto;font-weight:600}
+ .data-status{font-size:11px;color:var(--secondary-text-color);margin-top:3px}
+ .chart{position:relative;flex:1;min-height:120px;height:260px;margin-top:4px;outline:none;touch-action:pan-y}
+ .chart:focus-visible{box-shadow:inset 0 0 0 2px var(--primary-color);border-radius:8px}
+ .plot{position:absolute;left:44px;right:calc(12px + var(--axes-right,0px));top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
+ .axis-y,.axis-x{position:absolute;color:var(--secondary-text-color);font-size:11px;line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}.axis-y{left:0;transform:translateY(-50%);max-width:40px;overflow:hidden;text-overflow:ellipsis}.axis-x{bottom:4px;transform:translateX(-50%)}.axis-x:last-of-type{transform:translateX(-100%)}
+ .axis-unit{position:absolute;left:0;top:2px;max-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color);font-size:10px;font-weight:600}
+ ${SharedGraph.tooltipStyles()}
+ .state{display:flex;flex:1;height:260px;flex-direction:column;justify-content:center;align-items:flex-start;gap:8px;min-height:120px;font-size:14px;color:var(--secondary-text-color)}.retry{font:inherit;border:1px solid var(--divider-color);border-radius:6px;background:var(--secondary-background-color);color:var(--primary-text-color);min-height:44px;padding:0 12px;cursor:pointer}
+ .guide{position:absolute;top:22px;bottom:30px;border-left:1px dashed var(--secondary-text-color);pointer-events:none}.guide[hidden]{display:none}
+ .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none}.zoom-selection[hidden]{display:none}
+ .sr-only{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+ ${elevenStyles()}
+ ${graphStyles()}
+ @container(max-width:480px){.axis-x[data-tick="1"],.axis-x[data-tick="2"]{display:none}}
+ @media(max-width:480px){.card-content{padding:12px 12px 10px}}
+ `;}
+}
+
+// src/bar-chart.js
+
+class BarGraph extends SharedGraph {
+ render(host,spec){return super.render(host,{...spec,lines:spec.lines.map(p=>({...p,className:'series-bar'}))});}
+}
+
+const defaults=config=>({aggregation_period:'hour',aggregation_method:'avg',...config});
+const local=(en,nl)=>language(frontendHass())==='nl'?nl:en;
+class BarChartEditor extends HistoryGraphEditor {
+ static get cardClass(){return BarChartCard;}
+ _editorConfig(config){return editorConfig(defaults(config));}
+ _bind(form,definition,data){
+  if(form===this._form&&data.aggregation_period==='none')definition={...definition,schema:definition.schema.map(group=>group.name==='data_processing'?{...group,schema:group.schema.filter(field=>field.name!=='aggregation_method')}:group)};
+  super._bind(form,definition,data);
+ }
+ _emit(){this._render();super._emit();}
+}
+class BarChartCard extends HistoryGraphCard {
+ constructor(){super();this._graph=new BarGraph();}
+ static async getConfigElement(){
+  await super.getConfigElement();
+  if(!customElements.get('eleven-bar-chart-editor'))customElements.define('eleven-bar-chart-editor',BarChartEditor);
+  return document.createElement('eleven-bar-chart-editor');
+ }
+ static getStubConfig(){return {entities:[],aggregation_period:'hour',aggregation_method:'avg',hours_to_show:24};}
+ setConfig(config){
+  const c=defaults(config);
+  if(c.entities===undefined||(Array.isArray(c.entities)&&c.entities.length===0)){
+   // Native Add Card must be able to open an unconfigured sensor picker.
+   SharedGraph.clearHover(this);this._generation++;this._inFlight=false;this._started=false;
+   clearTimeout(this._timer);this._timer=null;this._series=[];this._rawSeries=null;this._viewport=null;
+   this._config=null;this.shadowRoot.innerHTML=`<ha-card style="padding:16px">${local('Select a sensor in the editor.','Kies een sensor in de editor.')}</ha-card>`;return;
+  }
+  super.setConfig(c);
+ }
+ static getConfigForm(){
+  const form=super.getConfigForm();
+  for(const group of form.schema){
+   if(group.name==='graph_settings'){
+    const mode=group.schema.find(s=>s.name==='graph_mode');
+    mode.default='lines';mode.selector={select:{mode:'dropdown',options:[{value:'lines',label:local('Grouped bars','Gegroepeerde staven')},{value:'stacked',label:local('Stacked bars','Gestapelde staven')}]}};
+   }
+   if(group.name==='data_processing'){
+    group.schema.find(s=>s.name==='aggregation_period').default='hour';
+    const method=group.schema.find(s=>s.name==='aggregation_method'),select=method.selector.select;
+    method.selector={select:{...select,get options(){return [...select.options,{value:'delta',label:local('Delta (end − start)','Delta (eind − begin)')}];}}};
+   }
+  }
+  const helper=form.computeHelper;
+  form.computeHelper=function(item){return item?.name==='aggregation_method'?local('Delta: end value minus start value per selected period. Negative changes are retained; missing data leaves a gap. AVG remains time-weighted.','Delta: eindwaarde min beginwaarde per gekozen tijdvak. Negatieve verschillen blijven behouden; ontbrekende gegevens geven een gat. AVG blijft tijdgewogen.'):helper.call(this,item);};
+  return form;
+ }
+ static getSeriesConfigForm(row={},rows=[]){
+  const form=super.getSeriesConfigForm(row,rows);
+  // Reuse native sensor/color/gradient controls, not meaningless line/fill settings.
+  form.schema=form.schema.filter(s=>s.name!=='series_fill').map(s=>s.name!=='series_line'?s:{...s,title:local('Bar appearance','Staafopmaak'),schema:s.schema.filter(f=>!['line_style_source','line_width','line_style','line_interpolation'].includes(f.name))});
+  return form;
+ }
+ _seriesAppearance(index){return {...super._seriesAppearance(index),show_fill:false,line_style:'solid'};}
+ _getGraphAxes(series,meta,visible){
+  const grouped=graphAxes(series,meta,this._config,this._start,this._end,visible);
+  grouped.axes=grouped.axes.map((axis,index)=>{
+   const group=grouped.plotSeries.filter((_,i)=>visible[i]&&grouped.seriesAxes[i]===index);
+   const options=axis.unit===meta.items[0]?.unit?{...this._config}:{};
+   let low=0,high=0;for(const s of group)for(const p of s.points)for(const v of [p.v,p.base])if(Number.isFinite(v)){low=Math.min(low,v);high=Math.max(high,v);}
+   if(low===0&&options.y_min==null)options.y_min=0;
+   if(high===0&&low<0&&options.y_max==null)options.y_max=0;
+   return {unit:axis.unit,...yAxis([...group,{points:[{t:this._start,v:0}]}],options)};
+  });
+  grouped.axes=alignZeroAxes(grouped.axes,this._config,meta.items[0]?.unit);
+  return grouped;
+ }
+ _line(points,end,x,y,index=0){
+  const visible=this._config.entities.map((_,i)=>i).filter(i=>this._isSeriesVisible(i));
+  const grouped=this._config.graph_mode!=='stacked',count=grouped?visible.length:1,slot=grouped?visible.indexOf(index):0;
+  let path='';
+  for(let i=0;i<points.length;i++){
+   const p=points[i],a=Math.max(this._viewStart,p.t),b=Math.min(this._viewEnd,points[i+1]?.t??end);
+   if(p.v===null||!Number.isFinite(p.v)||b<=a)continue;
+   const left=x(a),span=x(b)-left,padding=span*.12,width=span*.76/count;
+   const l=left+padding+slot*width,r=l+width*.9,base=this._config.graph_mode==='stacked'?(p.base??0):0;
+   path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
+  }
+  return path.trim();
+ }
+ _hoverInterval(timestamp){
+  const a=this._viewStart??this._start,b=this._viewEnd??this._end;
+  const t=Math.max(a,Math.min(b-1,timestamp)),period=this._config.aggregation_period;
+  const bounds=period==='none'?[this._start,this._end]:periodBounds(t,period,this._zone);
+  // Fragment boundaries are real bar edges, including unavailable intervals.
+  const edges=[Math.max(a,bounds[0]),Math.min(b,bounds[1]),...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t).filter(x=>x>a&&x<b&&x>bounds[0]&&x<bounds[1]):[])].sort((x,y)=>x-y);
+  const end=edges.find(x=>x>t)??b,start=edges.filter(x=>x<=t).at(-1)??a;
+  return {start,end,labelTime:period==='none'?start:bounds[0]};
+ }
+ _barTime(timestamp){
+  const period=this._config.aggregation_period,options={timeZone:this._zone,year:'numeric',month:period==='month'?'long':'short'};
+  if(period!=='month')options.day='numeric';
+  if(!['day','week','month'].includes(period))Object.assign(options,{hour:'2-digit',minute:'2-digit',...(period==='none'?{second:'2-digit'}:{})});
+  return new Intl.DateTimeFormat(this._lang||'en',options).format(timestamp);
+ }
+ _showTooltip(timestamp,publish=true){
+  const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
+  const interval=this._hoverInterval(timestamp);
+  // Keep History's value/gap handling, escaping and accessible rows, but never
+  // publish its unsnapped timestamp or leave its measurement-time guide visible.
+  super._showTooltip(interval.start,false);
+  const tooltip=chart.querySelector('.tooltip');if(tooltip.hidden)return;
+  const heading=tooltip.querySelector('strong'),oldTitle=heading.textContent,title=this._barTime(interval.labelTime);heading.textContent=title;
+  const sr=chart.querySelector('.sr-only');sr.textContent=title+sr.textContent.slice(oldTitle.length);
+  const box=chart.getBoundingClientRect(),plot=chart.querySelector('.plot').getBoundingClientRect();
+  const x=t=>plot.left-box.left+(t-this._viewStart)/(this._viewEnd-this._viewStart)*plot.width;
+  const left=x(interval.start),span=x(interval.end)-left,visible=this._series.map((_,i)=>i).filter(i=>this._isSeriesVisible(i));
+  const grouped=this._config.graph_mode!=='stacked',count=grouped?visible.length:1;
+  const px=left+span*(.5-.038/count),guide=chart.querySelector('.guide');if(guide)guide.style.left=`${px}px`;
+  let dot=0;const markers=chart.querySelectorAll('.hover-dot');
+  for(const i of visible){
+   const height=valueAt((this._plotSeries??this._series)[i].points,interval.start),axis=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};
+   if(height!==null&&height>=axis.min&&height<=axis.max){const slot=grouped?visible.indexOf(i):0;markers[dot++].style.left=`${left+span*(.12+(slot+.45)*.76/count)}px`;}
+  }
+  const measured=tooltip.getBoundingClientRect();
+  tooltip.style.left=`${Math.max(4,Math.min(box.width-measured.width-4,px+14+measured.width>box.width-4?px-measured.width-14:px+14))}px`;
+  if(publish)SharedGraph.publishHover(this,(interval.start+interval.end)/2);
+ }
+ _render(){
+  if(this._config&&this._config.title===undefined){
+   const title=language(this._hass)==='nl'?'Staafdiagram':'Bar chart';
+   this._config={...this._config,title};super._render();delete this._config.title;
+  }else super._render();
+ }
+ _styles(){
+  const paints=this._config?.entities.map((id,i)=>`.series-bar[data-entity="${id}"]{fill:${this._appearance(i).stroke};stroke:none}`).join('')??'';
+  return super._styles()+`\n${paints}\n.series-bar{stroke:none}.legend i{height:12px;width:8px;border:0!important;border-radius:2px;background:var(--series-color)}\n`;
+ }
+}
+if(!customElements.get('eleven-bar-chart'))customElements.define('eleven-bar-chart',BarChartCard);
+window.customCards=window.customCards??[];
+if(!window.customCards.some(c=>c.type==='eleven-bar-chart'))window.customCards.push({type:'eleven-bar-chart',name:'Eleven Bar Chart',get description(){return local('Vertical sensor history bars, based on Eleven History.','Verticale staven van sensorhistorie, gebaseerd op Eleven History.');}});
 
 })();

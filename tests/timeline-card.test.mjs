@@ -1,5 +1,31 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import vm from 'node:vm';import {readFileSync} from 'node:fs';
 function load(){const registry=new Map(),window=new EventTarget();const context=vm.createContext({HTMLElement:class {attachShadow(){this.shadowRoot={innerHTML:'',querySelector:()=>null,querySelectorAll:()=>[]};}},window,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},setTimeout,clearTimeout,URLSearchParams,Date,Intl});const code=readFileSync(new URL('../cards/timeline-card/dist/eleven-timeline-card.js',import.meta.url),'utf8');vm.runInContext(code,context);vm.runInContext(code,context);return {Card:registry.get('eleven-timeline-card'),window};}
+test('timeline defaults distinguish semantic states and device-class alarms without overriding rules',()=>{
+ const {Card}=load(),card=new Card();card.setConfig({entities:['switch.a','binary_sensor.smoke','binary_sensor.door','person.a','lock.a','cover.a']});
+ card._hass={states:{'binary_sensor.smoke':{attributes:{device_class:'smoke'}},'binary_sensor.door':{attributes:{device_class:'door'}}}};
+ const c=(state,id)=>card._appearance(state,id).color;
+ assert.equal(c('on','switch.a'),'#0072b2');assert.equal(c('off','switch.a'),'#8b949e');
+ assert.equal(c('home','person.a'),'#009e73');assert.equal(c('not_home','person.a'),'#e69f00');
+ assert.equal(c('on','binary_sensor.smoke'),'#d55e00');assert.equal(c('off','binary_sensor.smoke'),'#009e73');
+ assert.equal(c('on','binary_sensor.door'),'#e69f00');assert.equal(c('off','binary_sensor.door'),'#8b949e');
+ assert.equal(c('locked','lock.a'),'#009e73');assert.equal(c('unlocked','lock.a'),'#e69f00');
+ assert.notEqual(c('unknown','switch.a'),c('unavailable','switch.a'));
+ card.setConfig({entities:['switch.a'],default_color:[11,22,33],state_colors:[{state:'on',color:[1,2,3]},{state:'on',entity:'switch.a',color:[4,5,6]}]});
+ assert.equal(c('on','switch.a'),'rgb(4,5,6)');assert.equal(c('off','switch.a'),'rgb(11,22,33)');
+});
+test('timeline custom and numeric states get distinct deterministic colors independent of zoom and history order',()=>{
+ const {Card}=load(),card=new Card();card.setConfig({entities:['sensor.a']});
+ const states=Array.from({length:20},(_,i)=>String(i));card._series=[states.map(state=>({state,start:0,end:100}))];
+ const colors=states.map(s=>card._appearance(s,'sensor.a').color);assert.equal(new Set(colors).size,20);
+ card._viewport=[25,75];card._series[0].reverse();assert.deepEqual(states.map(s=>card._appearance(s,'sensor.a').color),colors);
+ card._series=[[{state:'eco'},{state:'comfort'},{state:'boost'}]];assert.equal(new Set(['eco','comfort','boost'].map(s=>card._appearance(s,'sensor.a').color)).size,3);
+});
+test('timeline state labels choose readable black or white text on default and RGB colors',()=>{
+ const {Card}=load(),card=new Card();card.setConfig({entities:['person.a'],show_state_labels:true});
+ assert.equal(card._appearance('not_home','person.a').textColor,'#000000');assert.equal(card._appearance('on','person.a').textColor,'#ffffff');
+ card.setConfig({entities:['person.a'],state_colors:[{state:'home',color:[250,250,250]}]});assert.equal(card._appearance('home','person.a').textColor,'#000000');
+ card._series=[[{state:'home',start:0,end:100}]];card._start=0;card._end=100;card._status='ready';card._render();assert.match(card.shadowRoot.innerHTML,/background-color:rgb\(250,250,250\);color:#000000/);
+});
 test('timeline editor groups advanced settings without changing config keys',()=>{const {Card}=load();const form=Card.getConfigForm();assert.deepEqual(Array.from(form.schema[0].schema.slice(0,2),s=>s.name),['title','hours_to_show']);assert.equal(Card.getEntityConfigForm().schema[0].name,'entity');const groups=form.schema.filter(s=>s.type==='expandable');assert.deepEqual(Array.from(groups,s=>s.name),['timeline_settings','status_settings','bar_settings']);for(const group of groups)assert.equal(group.flatten,true);const fields=form.schema.flatMap(s=>s.schema??[s]);assert.equal(new Set(fields.map(s=>s.name)).size,fields.length);assert.match(form.computeHelper({name:'state_colors'}),/on.*off.*home.*not_home/);assert.match(form.computeHelper({name:'status_settings'}),/alle entiteiten/i);assert.match(form.computeLabel({name:'bar_height'}),/px/);});
 test('timeline native form keeps default placeholders without mutating frozen config',()=>{const {Card}=load(),form=Card.getConfigForm(),config=Object.freeze({entities:['binary_sensor.a'],show_labels:false,bar_height:32});const fields=form.schema.flatMap(s=>s.schema??[s]);assert.equal(fields.find(s=>s.name==='bar_height').default,18);assert.equal(fields.find(s=>s.name==='show_axis').default,true);assert.equal(form.assertConfig,undefined);new Card().setConfig(config);assert.equal(config.show_labels,false);assert.equal(config.bar_height,32);});
 test('timeline registers once and visual editor exposes appearance and state mappings',()=>{const {Card,window}=load();assert.equal(window.customCards.length,1);const names=Card.getConfigForm().schema.flatMap(s=>s.schema??[s]).map(s=>s.name);for(const name of ['bar_height','border_radius','row_gap','state_colors','show_labels','show_legend','show_axis','hours_to_show'])assert.ok(names.includes(name),name);});

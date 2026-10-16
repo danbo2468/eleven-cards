@@ -1,4 +1,27 @@
 (()=>{
+// Shared markup stays in each card's shadow root: native links and existing
+// data-zoom handlers work without cross-bundle custom-element registration.
+const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function cardHeaderIcon(name){
+ const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',history:'m9 6 6 6-6 6'};
+ return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
+}
+function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en'}){
+ const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Geschiedenis']:['Zoom in','Zoom out','Reset zoom','History'];
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['in','out','reset'].map((action,i)=>`<button type="button" data-zoom="${action}" title="${label[i]}" aria-label="${label[i]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${zoom}<a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a></div></header>`;
+}
+function cardHeaderStyles(){return `
+.card-header{display:flex;align-items:flex-start;gap:8px;min-height:32px;flex:none;margin:-6px -4px 12px 0}
+.card-header h2{flex:1;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.header-actions{display:flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto}
+.zoom-controls{display:flex;gap:2px}
+.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);text-decoration:none;cursor:pointer}
+.header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
+.header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.header-actions svg,.period-controls button svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+`;}
+
 // Domain-neutral SVG renderer. Adapters own data, geometry, colors and annotations.
 function graphLineStyle(style, width = 3.5) {
   return {style, width, dash: style === 'dashed' ? '8 7' : style === 'dotted' ? '1 7' : 'none', cap: style === 'dashed' ? 'butt' : 'round'};
@@ -21,6 +44,36 @@ class SharedGraph {
       if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
     };
     window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
   }
   static publishHover(host, timestamp) {
     const group = this.hoverGroup(host);
@@ -47,6 +100,10 @@ class SharedGraph {
   static disconnectHover(host) {
     this.clearHover(host);
     if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
     host._sharedHoverListener = null;
     host._receiveSharedHover = null;
   }
@@ -118,6 +175,7 @@ function segments(rows,start,end){
 
 const escapeTimeline=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const TimelineView={
+ _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-(this._periodHours??this._config.hours_to_show)*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;},
  _setPeriod(hours){if(!Number.isFinite(hours)||hours<1||hours>8760)return;this._periodHours=hours;return this._reloadPeriod();},
  _navigate(direction){const now=Date.now();this._periodEnd=direction===0?null:Math.min(now,(this._periodEnd??this._end??now)+direction*(this._periodHours??this._config.hours_to_show)*3600000);if(this._periodEnd===now)this._periodEnd=null;return this._reloadPeriod();},
  _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._render();return this._refresh();},
@@ -135,6 +193,7 @@ const TimelineView={
  _receiveHover(t){if(t===null||!Number.isFinite(t)||t<this._viewStart||t>this._viewEnd){this._hideTooltip(false);return;}this._showTooltip(t,false);},
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._pointerFocusPending=null;this._cursor=null;this._pinned=false;for(const cls of ['tooltip','guide']){const el=this.shadowRoot.querySelector('.'+cls);if(el)el.hidden=true;}},
  _showTooltip(t,publish=true){
+  if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart'),tooltip=chart?.querySelector('.tooltip'),guide=chart?.querySelector('.guide');if(!tooltip)return;
   this._cursor=t;const nl=this._nl(),a=this._viewStart,b=this._viewEnd,esc=escapeTimeline;
   tooltip.innerHTML=`<strong>${esc(this._time(t))}</strong>`+this._config.entities.map((id,i)=>{if(this._stateLimits?.[i])return '';const s=(this._series[i]??[]).find(s=>s.start<=t&&(t<s.end||(t===b&&s.end===b)));if(!s)return `<span>${esc(this._name(id))}: ${nl?'Geen geschiedenis':'No history'}</span>`;const v=this._segmentAppearance(s,id);return `<span><i style="background:${v.color}"></i><b>${esc(this._name(id))}: ${esc(v.label)}</b><small>${esc(this._time(s.start))} – ${esc(this._time(s.end))} · ${esc(this._duration(s.end-s.start))}</small></span>`;}).join('');
@@ -156,21 +215,20 @@ const TimelineView={
   chart.onfocusout=e=>{if(!chart.contains(e.relatedTarget))this._hideTooltip();};this.shadowRoot.querySelectorAll('.segment').forEach(button=>{button.onfocus=()=>{const fromPointer=this._pointerFocusPending===button;this._pointerFocusPending=null;if(fromPointer&&this._cursor!=null)return;this._pinned=true;this._showTooltip(Number(button.dataset.time));};});
  },
  _render(){
-  if(!this._config)return;const c=this._config,nl=this._nl(),esc=escapeTimeline;this._viewStart=this._viewport?.[0]??this._start;this._viewEnd=this._viewport?.[1]??this._end;const a=this._viewStart,b=this._viewEnd;let body='',controls='';
+  if(!this._config)return;const c=this._config,nl=this._nl(),esc=escapeTimeline;this._viewStart=this._viewport?.[0]??this._start;this._viewEnd=this._viewport?.[1]??this._end;const a=this._viewStart,b=this._viewEnd;let body='';const controls=cardHeader({title:c.title??(nl?'Statustijdlijn':'Status timeline'),showTitle:c.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:nl?'nl':'en'});
   if(this._status!=='ready')body=`<div class="message" role="status">${this._status==='error'?(nl?'Geschiedenis kon niet worden geladen.':'Unable to load history.'):(nl?'Geschiedenis laden…':'Loading history…')}${this._status==='error'?`<button class="retry">${nl?'Opnieuw proberen':'Retry'}</button>`:''}</div>`;
   else{
-   controls=`<div class="zoom-controls" role="group" aria-label="Zoom">${[['in','+',nl?'Inzoomen':'Zoom in'],['out','−',nl?'Uitzoomen':'Zoom out'],['reset','↺',nl?'Zoom herstellen':'Reset zoom']].map(([action,label,title])=>`<button data-zoom="${action}" title="${title}" aria-label="${title}">${label}</button>`).join('')}</div>`;
-   const legend=new Map(),rows=c.entities.map((id,i)=>{const name=this._name(id);if(this._stateLimits?.[i])return `<div class="row"><div class="row-label">${esc(name)}</div><div class="state-limit" role="status">${esc(this._stateLimitMessage())}</div></div>`;const bars=(this._series[i]??[]).filter(s=>s.end>a&&s.start<b).map(s=>{const v=this._segmentAppearance(s,id);legend.set(v.label+'|'+v.color,v);const start=Math.max(a,s.start),end=Math.min(b,s.end),description=`${name}: ${v.label}, ${this._time(s.start)} – ${this._time(s.end)} · ${this._duration(s.end-s.start)}`;return `<button class="segment ${['unknown','unavailable'].includes(s.state)?'gap':''}" style="left:${(start-a)/(b-a)*100}%;width:${(end-start)/(b-a)*100}%;background-color:${v.color}" aria-label="${esc(description)}" data-time="${start}">${c.show_state_labels?`<span>${esc(v.label)}</span>`:''}</button>`;}).join('');return `<div class="row">${c.show_labels?`<div class="row-label">${esc(name)}</div>`:''}<div class="track">${bars}</div>${c.show_summary?`<div class="summary">${esc(this._summary(i))}</div>`:''}</div>`;}).join('');
+
+   const legend=new Map(),rows=c.entities.map((id,i)=>{const name=this._name(id);if(this._stateLimits?.[i])return `<div class="row"><div class="row-label">${esc(name)}</div><div class="state-limit" role="status">${esc(this._stateLimitMessage())}</div></div>`;const bars=(this._series[i]??[]).filter(s=>s.end>a&&s.start<b).map(s=>{const v=this._segmentAppearance(s,id);legend.set(v.label+'|'+v.color,v);const start=Math.max(a,s.start),end=Math.min(b,s.end),description=`${name}: ${v.label}, ${this._time(s.start)} – ${this._time(s.end)} · ${this._duration(s.end-s.start)}`;return `<button class="segment ${['unknown','unavailable'].includes(s.state)?'gap':''}" style="left:${(start-a)/(b-a)*100}%;width:${(end-start)/(b-a)*100}%;background-color:${v.color};color:${v.textColor??'inherit'}" aria-label="${esc(description)}" data-time="${start}">${c.show_state_labels?`<span>${esc(v.label)}</span>`:''}</button>`;}).join('');return `<div class="row">${c.show_labels?`<div class="row-label">${esc(name)}</div>`:''}<div class="track">${bars}</div>${c.show_summary?`<div class="summary">${esc(this._summary(i))}</div>`:''}</div>`;}).join('');
    body=`<div class="chart" tabindex="0" role="group" aria-label="${nl?'Statustijdlijn':'Status timeline'}">${c.show_grid!==false?this._ticks().map(r=>`<div class="grid-line" style="left:${r*100}%"></div>`).join(''):''}${rows}<div class="guide" hidden></div><div class="zoom-selection" hidden></div><div class="tooltip" role="status" hidden></div></div>`;
    if(c.show_axis)body+=`<div class="axis">${this._ticks().map(r=>`<span>${esc(this._time(a+(b-a)*r))}</span>`).join('')}</div>`;
    if(c.show_legend)body+=`<div class="legend">${[...legend.values()].map(v=>`<span><i style="background:${v.color}"></i>${esc(v.label)}</span>`).join('')}</div>`;
   }
-  const hours=this._periodHours??c.hours_to_show,choices=[...new Set([6,24,168,hours])].sort((a,b)=>a-b),navigation=c.show_navigation===false?'':`<div class="period-controls"><button data-period="previous" aria-label="${nl?'Vorige periode':'Previous period'}">‹</button><select aria-label="${nl?'Periode':'Period'}">${choices.map(h=>`<option value="${h}" ${h===hours?'selected':''}>${h===168?(nl?'7 dagen':'7 days'):`${h} ${nl?'uur':'hours'}`}</option>`).join('')}</select><button data-period="next" aria-label="${nl?'Volgende periode':'Next period'}" ${this._periodEnd==null?'disabled':''}>›</button><button data-period="now">${nl?'Nu':'Now'}</button></div>`;
+  const hours=this._periodHours??c.hours_to_show,choices=[...new Set([6,24,168,hours])].sort((a,b)=>a-b),navigation=c.show_navigation===false?'':`<div class="period-controls"><button data-period="previous" aria-label="${nl?'Vorige periode':'Previous period'}">${cardHeaderIcon('previous')}</button><select aria-label="${nl?'Periode':'Period'}">${choices.map(h=>`<option value="${h}" ${h===hours?'selected':''}>${h===168?(nl?'7 dagen':'7 days'):`${h} ${nl?'uur':'hours'}`}</option>`).join('')}</select><button data-period="next" aria-label="${nl?'Volgende periode':'Next period'}" ${this._periodEnd==null?'disabled':''}>${cardHeaderIcon('next')}</button><button data-period="now">${nl?'Nu':'Now'}</button></div>`;
   this.shadowRoot.innerHTML=`<style>:host{display:block;min-width:0}ha-card{display:block;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b);font-family:inherit;height:100%}
-.content{padding:16px;box-sizing:border-box;position:relative}h2{margin:0 0 18px;padding-right:100px;font-size:18px;font-weight:650;line-height:1.25;letter-spacing:-.01em;overflow-wrap:anywhere}
-.zoom-controls{position:absolute;right:12px;top:10px;display:flex;gap:2px}
-.zoom-controls button{width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);font-size:20px;cursor:pointer}
-.zoom-controls button:hover,.zoom-controls button:focus-visible{background:var(--secondary-background-color,#eee);outline:1px solid var(--divider-color)}
+.content{padding:16px 16px 12px;box-sizing:border-box;position:relative}
+${cardHeaderStyles()}
+@media(max-width:480px){.content{padding:12px 12px 10px}}
 .period-controls{display:flex;align-items:center;gap:4px;margin:0 0 7px}
 .period-range{font-size:11px;color:var(--secondary-text-color,#666);margin-bottom:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .period-controls button,.period-controls select{font:inherit;font-size:12px;min-height:32px;border:1px solid var(--divider-color,#ddd);border-radius:5px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));padding:4px 10px;cursor:pointer}
@@ -195,14 +253,10 @@ const TimelineView={
 .legend i,.tooltip i{width:9px;height:9px;border-radius:3px;flex-shrink:0}
 .guide{position:absolute;top:0;bottom:0;border-left:1px solid var(--primary-text-color,#20252b);opacity:.6;pointer-events:none;z-index:2}
 .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none;z-index:3}
-.tooltip{position:absolute;z-index:4;box-sizing:border-box;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;overflow:auto;overflow-wrap:anywhere;pointer-events:none}
-.tooltip strong{display:block;margin-bottom:4px}
-.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px}
-.tooltip i{margin-top:4px}
-.tooltip small{grid-column:2;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums}
+${SharedGraph.tooltipStyles()}
 .state-limit{font-size:12px;color:var(--error-color,#db4437);overflow-wrap:anywhere;position:relative}
 .message{font-size:14px;color:var(--secondary-text-color,#666);min-height:60px}
-.retry{display:block;margin-top:12px;min-height:44px;background:transparent;color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:6px;padding:8px 12px}[hidden]{display:none}</style><ha-card><div class="content"><h2>${esc(c.title??(nl?'Statustijdlijn':'Status timeline'))}</h2>${controls}${navigation}${c.show_navigation!==false&&this._status==='ready'?`<div class="period-range">${esc(this._time(a,true))} – ${esc(this._time(b,true))}</div>`:''}${body}</div></ha-card>`;
+.retry{display:block;margin-top:12px;min-height:44px;background:transparent;color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:6px;padding:8px 12px}[hidden]{display:none}</style><ha-card><div class="content">${controls}${navigation}${c.show_navigation!==false&&this._status==='ready'?`<div class="period-range">${esc(this._time(a,true))} – ${esc(this._time(b,true))}</div>`:''}${body}</div></ha-card>`;
   const nav=this.shadowRoot.querySelector('.period-controls');if(nav){nav.querySelector('select').onchange=e=>this._setPeriod(Number(e.target.value));for(const [key,direction] of [['previous',-1],['next',1],['now',0]])nav.querySelector(`[data-period="${key}"]`).onclick=()=>this._navigate(direction);}
   const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this.shadowRoot.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:.5,out:2,reset:0}[button.dataset.zoom]));this._bindInteractions();const renderedChart=this.shadowRoot.querySelector('.chart'),restoreTooltip=()=>{if(this.shadowRoot.querySelector('.chart')===renderedChart){SharedGraph.restoreHover(this);if(this._cursor!=null)this._showTooltip(this._cursor,false);}};const ready=this.shadowRoot.querySelector('ha-card')?.updateComplete;if(ready?.then)ready.then(restoreTooltip);else restoreTooltip();
  }
@@ -214,9 +268,10 @@ const helpers={entities:'Elke entiteit krijgt één balk, in de gekozen volgorde
 function color(v,fallback='#607d94'){if(Array.isArray(v)&&v.length===3&&v.every(n=>Number.isFinite(n)&&n>=0&&n<=255))return `rgb(${v.join(',')})`;return typeof v==='string'&&/^(#[\da-f]{3,8}|[a-z]+|var\(--[\w-]+\))$/i.test(v)?v:fallback;}
 Object.assign(labels,{entity:'Entiteit',name:'Weergavenaam (optioneel)',state_colors:'Statusregels',timeline_settings:'Tijdlijn',status_settings:'Algemene statusregels',bar_settings:'Balkopmaak'});
 Object.assign(helpers,{state_colors:'Gebruik de echte statuswaarde, bijvoorbeeld on, off, home of not_home. Eigen regels gaan voor algemene regels. Dubbele statuswaarden zijn niet toegestaan.',status_settings:'Deze regels gelden voor alle entiteiten, tenzij de entiteit een eigen regel voor dezelfde status heeft.'});
-Object.assign(labels,{sync_hover:'Hover synchroniseren',hover_sync_group:'Hover-synchronisatiegroep'});
+Object.assign(labels,{show_title:'Titel tonen',sync_hover:'Hover synchroniseren',hover_sync_group:'Hover-synchronisatiegroep'});
 Object.assign(helpers,{sync_hover:'Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.',hover_sync_group:'Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'});
 const timelineEnglish={
+ 'Titel tonen':'Show title',
  'Hover synchroniseren':'Synchronize hover','Hover-synchronisatiegroep':'Hover synchronization group',
  'Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.':'Shares the selected time with other Eleven graphs on this page.',
  'Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.':'Cards with the same group follow each other. Empty uses the default group.',
@@ -280,7 +335,7 @@ class TimelineCard extends HTMLElement{
  static getStubConfig(hass){return {entities:Object.keys(hass?.states??{}).filter(id=>/^(binary_sensor|person|input_boolean|switch)\./.test(id)).slice(0,1),hours_to_show:24};}
  static editorConfig(c={}){
   const clone=v=>Array.isArray(v)?v.map(clone):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,clone(x)])):v;
-  const data=clone({hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c});
+  const data=clone({hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_title:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c});
   const ids=data.entities??[];
   data._orphan_colors=data.state_colors.filter(r=>r.entity&&!ids.includes(r.entity));
   data._orphan_options=data.series_options.filter(r=>!ids.includes(r.entity));
@@ -310,7 +365,7 @@ class TimelineCard extends HTMLElement{
   return this._form([
    group('timeline_settings','Tijdlijn',[
     {name:'title',selector:{text:{}}},num('hours_to_show',1,8760,24),
-    ...['show_labels','show_axis','show_legend','show_state_labels','show_grid','show_summary','show_navigation','sync_hover'].map(name=>({name,default:!['show_state_labels','show_summary'].includes(name),selector:{boolean:{}}})),
+    ...['show_title','show_labels','show_axis','show_legend','show_state_labels','show_grid','show_summary','show_navigation','sync_hover'].map(name=>({name,default:!['show_state_labels','show_summary'].includes(name),selector:{boolean:{}}})),
     {name:'hover_sync_group',selector:{text:{}}}
    ]),
    group('status_settings','Algemene statusregels',[{name:'state_colors',selector:this._rules()},{name:'default_color',selector:{color_rgb:{}}}]),
@@ -322,7 +377,7 @@ class TimelineCard extends HTMLElement{
   if(!customElements.get('eleven-timeline-editor'))customElements.define('eleven-timeline-editor',TimelineSettingsEditor);
   return document.createElement('eleven-timeline-editor');
  }
- setConfig(c){validateTimeline(c,this._hass);if(!Array.isArray(c.entities)||!c.entities.length||c.entities.length>16||c.entities.some(id=>typeof id!=='string'||!/^\w+\.\w+$/.test(id)))throw Error('Kies 1–16 entiteiten.');const config={hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c};for(const [k,min,max] of [['hours_to_show',1,8760],['bar_height',4,80],['border_radius',0,40],['row_gap',0,64]])if(!Number.isFinite(config[k])||config[k]<min||config[k]>max)throw Error(`Ongeldige ${k}`);for(const k of ['state_colors','series_options'])if(!Array.isArray(config[k])||config[k].some(x=>!x||typeof x!=='object'))throw Error(`Ongeldige ${k}`);SharedGraph.clearHover(this);this._config={...config,hover_sync_group:config.hover_sync_group??''};this._viewport=null;this._periodHours=null;this._periodEnd=null;this._hideTooltip();this._generation++;this._inFlight=false;this._series=[];this._stateLimits=[];this._status='loading';clearTimeout(this._timer);this._render();if(this._connected&&this._hass)this._refresh();}
+ setConfig(c){validateTimeline(c,this._hass);if(!Array.isArray(c.entities)||!c.entities.length||c.entities.length>16||c.entities.some(id=>typeof id!=='string'||!/^\w+\.\w+$/.test(id)))throw Error('Kies 1–16 entiteiten.');const config={hours_to_show:24,bar_height:18,border_radius:5,row_gap:16,show_labels:true,show_legend:true,show_title:true,show_axis:true,show_state_labels:false,show_grid:true,show_summary:false,show_navigation:true,sync_hover:true,hover_sync_group:'',state_colors:[],series_options:[],...c};for(const [k,min,max] of [['hours_to_show',1,8760],['bar_height',4,80],['border_radius',0,40],['row_gap',0,64]])if(!Number.isFinite(config[k])||config[k]<min||config[k]>max)throw Error(`Ongeldige ${k}`);for(const k of ['state_colors','series_options'])if(!Array.isArray(config[k])||config[k].some(x=>!x||typeof x!=='object'))throw Error(`Ongeldige ${k}`);SharedGraph.clearHover(this);this._config={...config,hover_sync_group:config.hover_sync_group??''};this._viewport=null;this._periodHours=null;this._periodEnd=null;this._hideTooltip();this._generation++;this._inFlight=false;this._series=[];this._stateLimits=[];this._status='loading';clearTimeout(this._timer);this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(h){this._hass=h;if(this._config){this._render();if(this._connected&&!this._started)this._refresh();}}
  get hass(){return this._hass;}
  connectedCallback(){this._connected=true;SharedGraph.connectHover(this,t=>this._receiveHover(t));this._outside??=e=>{if(!e.composedPath().includes(this)&&!SharedGraph.hoverSourceInEvent(this,e))this._hideTooltip();};globalThis.document?.addEventListener('pointerdown',this._outside);if(this._config&&this._hass)this._refresh();}
@@ -331,7 +386,40 @@ class TimelineCard extends HTMLElement{
  getGridOptions(){return {columns:12,min_columns:6};}
  _nl(){return (this._hass?.locale?.language??this._hass?.language??'nl').startsWith('nl');}
  _time(t,full=false){try{return new Intl.DateTimeFormat(this._nl()?'nl-NL':'en-GB',{hour:'2-digit',minute:'2-digit',...(full||(this._viewEnd-this._viewStart)>86400000?{day:'2-digit',month:'short'}:{}),timeZone:this._hass?.config?.time_zone}).format(t);}catch{return new Date(t).toLocaleTimeString();}}
- _appearance(state,id){const m=this._config.state_colors.find(x=>String(x.state)===state&&x.entity===id)??this._config.state_colors.find(x=>String(x.state)===state&&!x.entity);const defaults={on:'#26a69a',off:'#607d94',home:'#26a69a',not_home:'#e78a14',unknown:'#9e9e9e',unavailable:'#9e9e9e'};return {label:m?.label??(state==='unknown'?(this._nl()?'Onbekend':'Unknown'):state==='unavailable'?(this._nl()?'Niet beschikbaar':'Unavailable'):state),color:color(m?.color,color(this._config.default_color,defaults[state]??'#ab70d9'))};}
+ _semanticColor(state,id){
+  const defaults={on:'#0072b2',off:'#8b949e',home:'#009e73',not_home:'#e69f00',unknown:'#767676',unavailable:'#b64e86'};
+  if(id?.startsWith('binary_sensor.')&&['on','off'].includes(state)){
+   const deviceClass=this._hass?.states?.[id]?.attributes?.device_class;
+   if(['battery','carbon_monoxide','gas','moisture','problem','safety','smoke','tamper'].includes(deviceClass))return state==='on'?'#d55e00':'#009e73';
+   if(['door','garage_door','opening','window','lock'].includes(deviceClass))return state==='on'?'#e69f00':deviceClass==='lock'?'#009e73':'#8b949e';
+   if(deviceClass==='connectivity')return state==='on'?'#009e73':'#d55e00';
+  }
+  if(id?.startsWith('lock.'))return {locked:'#009e73',unlocked:'#e69f00',locking:'#0072b2',unlocking:'#cc79a7',jammed:'#d55e00'}[state]??defaults[state];
+  if(id?.startsWith('cover.'))return {open:'#0072b2',closed:'#8b949e',opening:'#009e73',closing:'#e69f00'}[state]??defaults[state];
+  return defaults[state];
+ }
+ _categoricalColor(state,id){
+  const palette=['#4477aa','#ee7733','#228833','#cc6677','#aa3377','#66ccee','#997700','#882255','#44aa99','#332288','#ddaa33','#6699cc','#aa4499','#117733','#ddcc77','#88ccee','#cc3311','#7777bb','#bb8844','#44bbbb'];
+  const series=this._series?.[this._config.entities.indexOf(id)];
+  const hash=value=>{let n=2166136261;for(const ch of value)n=Math.imul(n^ch.charCodeAt(0),16777619);return n>>>0;};
+  if(!series)return palette[hash(state)%palette.length];
+  this._categoryColors??=new WeakMap();let colors=this._categoryColors.get(series);
+  if(!colors){
+   colors=new Map();const used=new Set(),states=[...new Set(series.filter(s=>!s.missing&&!this._semanticColor(String(s.state),id)).map(s=>String(s.state)))].sort();
+   for(const value of states){let index=hash(value)%palette.length;while(used.has(index)&&used.size<palette.length)index=(index+1)%palette.length;used.add(index);colors.set(value,palette[index]);}
+   this._categoryColors.set(series,colors);
+  }
+  return colors.get(state)??palette[hash(state)%palette.length];
+ }
+ _textColor(background){
+  let rgb;if(/^#[\da-f]{6}$/i.test(background))rgb=[1,3,5].map(i=>parseInt(background.slice(i,i+2),16));
+  else if(/^#[\da-f]{3}$/i.test(background))rgb=[...background.slice(1)].map(ch=>parseInt(ch+ch,16));
+  else if(/^rgb\([\d., ]+\)$/.test(background))rgb=background.slice(4,-1).split(',').map(Number);
+  if(!rgb||rgb.length!==3)return '#ffffff';
+  const linear=rgb.map(n=>{const s=n/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}),luminance=linear[0]*.2126+linear[1]*.7152+linear[2]*.0722;
+  return (luminance+.05)/.05>=1.05/(luminance+.05)?'#000000':'#ffffff';
+ }
+ _appearance(state,id){const m=this._config.state_colors.find(x=>String(x.state)===state&&x.entity===id)??this._config.state_colors.find(x=>String(x.state)===state&&!x.entity),background=color(m?.color,color(this._config.default_color,this._semanticColor(state,id)??this._categoricalColor(state,id)));return {label:m?.label??(state==='unknown'?(this._nl()?'Onbekend':'Unknown'):state==='unavailable'?(this._nl()?'Niet beschikbaar':'Unavailable'):state),color:background,textColor:this._textColor(background)};}
  async _refresh(){if(!this._connected||!this._hass||!this._config||this._inFlight)return;clearTimeout(this._timer);this._inFlight=true;this._started=true;const generation=++this._generation,c=this._config,end=this._periodEnd??Date.now(),start=end-(this._periodHours??c.hours_to_show)*3600000;let timeout;try{const q=new URLSearchParams({filter_entity_id:c.entities.join(','),end_time:new Date(end).toISOString(),minimal_response:'',no_attributes:''});const response=await Promise.race([this._hass.callApi('GET',`history/period/${new Date(start).toISOString()}?${q}`),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('timeout')),15000);timeout.unref?.();})]);if(!this._connected||generation!==this._generation)return;if(!Array.isArray(response))throw Error('Invalid history');this._start=start;this._end=end;this._stateLimits=[];this._series=c.entities.map((id,index)=>{const rows=response.find(rows=>rows?.[0]?.entity_id===id)??[],states=new Set();for(const row of rows){if(row.state==null)continue;states.add(String(row.state));if(states.size>20){this._stateLimits[index]=true;return [];}}const result=segments(rows,start,end),first=Math.min(...rows.map(r=>Date.parse(r.last_changed??r.last_updated)).filter(Number.isFinite));if(result[0]?.state==='unknown'&&first>start){if(first<result[0].end)result.unshift({...result[0],end:first,missing:true}),result[1]={...result[1],start:first};else result[0]={...result[0],missing:true};}return result;});this._status='ready';}catch{if(generation===this._generation)this._status='error';}finally{clearTimeout(timeout);if(this._connected&&generation===this._generation){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),60000);this._timer.unref?.();}}}
 }
 Object.assign(TimelineCard.prototype,TimelineView);

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,5 +25,7 @@ const bundledCard = cardSource.replace(importPattern, '').replace(/^import .* fr
 const banner = '// Eleven Dynamic Energy Price Card — standalone dashboard bundle\n';
 
 await mkdir(dirname(outputPath), { recursive: true });
-await writeFile(outputPath, `${banner}(()=>{\n"use strict";\n${graphSource.replace(/^export /gm, '')}\n${bundledUtils}\n${bundledLocalization}\n${bundledCard}\n})();\n`, 'utf8');
+const temporaryPath = resolve(dirname(outputPath), `.energy-${process.pid}.tmp`);
+await writeFile(temporaryPath, `${banner}(()=>{\n"use strict";\n${graphSource.replace(/^export /gm, '')}\n${bundledUtils}\n${bundledLocalization}\n${bundledCard}\n})();\n`, 'utf8');
+await rename(temporaryPath, outputPath);
 console.log(`Built ${outputPath}`);

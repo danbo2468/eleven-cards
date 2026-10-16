@@ -4,6 +4,11 @@ Horizontal status-history bars, one per entity. Uses Home Assistant Recorder his
 
 ## Installation
 
+The Graph and Timeline cards share one header implementation, including title typography, responsive spacing and stroke-based SVG icons. The visual editor’s Show title / Titel tonen switch (`show_title`, default `true`) hides only the heading, preserving its configured text and the zoom and History controls.
+
+The header’s arrow opens Home Assistant History with all configured entities and the currently visible time range, including period navigation and viewport zoom. The link is keyboard-accessible and remains available without a title.
+
+
 Included in the root Eleven Cards collection (`dist/eleven-cards.js`). Alternatively build with `node cards/timeline-card/scripts/build.mjs`, copy `dist/eleven-timeline-card.js` from this card to `/config/www/eleven-cards/`, and register `/local/eleven-cards/eleven-timeline-card.js` as a JavaScript module. Do not register the standalone module and collection together.
 
 Add **Eleven Timeline Card** through the card picker. The editor uses native Home Assistant controls: **Timeline**, one expandable entry per entity, **Common state rules**, and **Bar appearance**. Select each entity once; its optional name and its own status/color/label rules live in that same entry. Add, remove and reorder entries without separating their names and rules. Individual state rules use native object dialogs without another entity picker. Common rules apply only when no entity-specific rule matches. Duplicate state values within the same scope are reported explicitly.
@@ -46,7 +51,7 @@ state_colors:
 
 `state_colors`: list of `state`, `color`, optional `label`, optional `entity`. Entity-specific mappings take priority over global mappings. Colors accept RGB arrays, hex, named CSS colors or CSS variables. `series_options`: list of `entity` and optional `name`.
 
-Defaults distinguish on/home (green), off (blue-grey), not_home (amber), unknown/unavailable (striped grey) and other states (purple). Explicit mappings override defaults.
+Defaults use blue for active/on and grey for inactive/off; home is teal-green and away is amber. Alarm/problem binary-sensor classes use vermilion for a detected problem and teal-green for safe; opening sensors use amber for open. Connectivity, locks and covers have matching semantic colors. Unknown is striped grey, while unavailable is striped mauve. Other recorded values receive a deterministic, collision-resolved categorical palette (up to the 20-state limit), not a single shared purple. Assignments use the full fetched history, so zoom and transition order do not recolor states; a different set of states in another period can resolve palette collisions differently. Labels inside default hex and configured hex/RGB bars automatically choose black or white for contrast. Explicit entity rules, common rules and `default_color` retain priority, in that order.
 
 Hover shows a vertical guide across all bars and an absolutely positioned tooltip with the state, interval start/end and duration for each entity. This overlay does not change the card height. A mouse click or touch tap pins it; Escape, focus leaving the chart or an outside tap dismisses it. Tab reaches segments; arrow keys and Home/End navigate state boundaries. Long pinned tooltips can be scrolled. Missing Recorder history is explicitly labeled No history, distinct from recorded Unknown and Unavailable, and is never replaced by the current entity state.
 

@@ -8,7 +8,7 @@ const state={state:'21',attributes:{unit_of_measurement:'°C',friendly_name:'Roo
 const response=id=>[[{entity_id:id,state:'21',last_changed:new Date(Date.now()-1000).toISOString()}]];
 test('native form localizes callback context, preserves custom title, registers Sections layout',async()=>{
  const {HistoryGraphCard:C}=await load();const form=C.getConfigForm();
- assert.deepEqual(form.schema.map(s=>s.name),['title','hours_to_show','graph_settings','data_processing']);
+ assert.deepEqual(form.schema.map(s=>s.name),['title','show_title','hours_to_show','graph_settings','y_axis','data_processing']);
  assert.equal(C.getSeriesConfigForm().schema[0].selector.entity.domain,'sensor');
  assert.equal(form.computeLabel.call({hass:{language:'nl'}},{name:'entities'}),'Sensoren');
  const card=new C();card.setConfig({entities:['sensor.a'],title:'Mijn expliciete titel'});
@@ -29,9 +29,9 @@ test('history renders loading then graph, throttles hass updates and drops race/
  pending[0].resolve(response('sensor.a'));await tick();assert.equal(card._series[0].id,'sensor.b');
  const before=card.shadowRoot.innerHTML;card._refresh();assert.equal(pending.length,3);card.disconnectedCallback();pending[2].resolve([]);await tick();assert.notEqual(card._status,'empty');assert.equal(card._timer,null);
 });
-test('empty, rejected history and metadata unit errors render honest localized states',async()=>{
+test('empty, rejected history and missing metadata render honest localized states',async()=>{
  const {HistoryGraphCard:C}=await load();const card=new C();card.setConfig({entities:['sensor.a']});
  card.hass={states:{'sensor.a':state},callApi:async()=>[]};card.connectedCallback();await tick();assert.equal(card._status,'empty');
  card.hass={states:{'sensor.a':state},callApi:async()=>{throw new Error('HTTP 500');}};await card._refresh();assert.equal(card._status,'error');assert.match(card.shadowRoot.innerHTML,/Retry/);
- card.setConfig({entities:['sensor.a','sensor.b']});card.hass={states:{'sensor.a':state,'sensor.b':{...state,attributes:{unit_of_measurement:'W'}}},callApi:async()=>{throw new Error('should not fetch');}};await card._refresh();assert.equal(card._status,'unit');card.disconnectedCallback();
+ card.setConfig({entities:['sensor.a','sensor.b']});card.hass={states:{'sensor.a':state},callApi:async()=>{throw new Error('should not fetch');}};await card._refresh();assert.equal(card._status,'missing');card.disconnectedCallback();
 });

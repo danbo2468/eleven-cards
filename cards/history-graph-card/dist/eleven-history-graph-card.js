@@ -25,6 +25,36 @@ class SharedGraph {
       if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
     };
     window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
   }
   static publishHover(host, timestamp) {
     const group = this.hoverGroup(host);
@@ -51,6 +81,10 @@ class SharedGraph {
   static disconnectHover(host) {
     this.clearHover(host);
     if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
     host._sharedHoverListener = null;
     host._receiveSharedHover = null;
   }
@@ -113,6 +147,30 @@ function graphStyles() {
   `;
 }
 
+// ../../shared/card-header.js
+// Shared markup stays in each card's shadow root: native links and existing
+// data-zoom handlers work without cross-bundle custom-element registration.
+const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function cardHeaderIcon(name){
+ const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',history:'m9 6 6 6-6 6'};
+ return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
+}
+function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en'}){
+ const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Geschiedenis']:['Zoom in','Zoom out','Reset zoom','History'];
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['in','out','reset'].map((action,i)=>`<button type="button" data-zoom="${action}" title="${label[i]}" aria-label="${label[i]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${zoom}<a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a></div></header>`;
+}
+function cardHeaderStyles(){return `
+.card-header{display:flex;align-items:flex-start;gap:8px;min-height:32px;flex:none;margin:-6px -4px 12px 0}
+.card-header h2{flex:1;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.header-actions{display:flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto}
+.zoom-controls{display:flex;gap:2px}
+.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);text-decoration:none;cursor:pointer}
+.header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
+.header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.header-actions svg,.period-controls button svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+`;}
+
 // src/history-utils.js
 function validColor(color){return typeof color==='string'?/^#[\da-f]{6}$/i.test(color):Array.isArray(color)&&color.length===3&&color.every(v=>Number.isInteger(v)&&v>=0&&v<=255);}
 const SERIES_COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
@@ -125,7 +183,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  const option=config.series_options?.find(s=>s.entity===config.entities[index])??{};
  const inherited=option.gradient_stops??(option.color?[]:config.gradient_stops??[]);
  const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
- const row={entity:config.entities[index],...(option.name?{name:option.name}:{}),
+ const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
   line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
   line_interpolation:option.line_interpolation??config.line_interpolation??'step',
   color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
@@ -144,7 +202,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 function editorConfig(config) {
- const data={hours_to_show:24,graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -178,7 +236,7 @@ function updateSeriesRow(data,index,value){
   delete rows[index].line_style_source;
   for(const key of LINE_GEOMETRY_KEYS)rows[index][key]=old[key];
  }
- if(old.entity!==rows[index].entity)for(const row of rows){
+ if(old.entity&&old.entity!==rows[index].entity)for(const row of rows){
   if(row.line_style_source===old.entity){
    if(rows[index].entity)row.line_style_source=rows[index].entity;
    else delete row.line_style_source;
@@ -210,7 +268,7 @@ function validateConfig(config) {
  const hours=config.hours_to_show??24;
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -221,10 +279,13 @@ function validateConfig(config) {
   else if(!Number.isFinite(result[key]))throw new Error(key);
  }
  if(result.y_min!==undefined&&result.y_max!==undefined&&result.y_min>=result.y_max)throw new Error('y_range');
+ if(result.y_step==null||result.y_step==='')delete result.y_step;
+ else if(!Number.isFinite(result.y_step)||result.y_step<=0)throw new Error('y_step');
+ if(result.y_step!==undefined&&result.y_min!==undefined&&result.y_max!==undefined)yAxis([],result);
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
- for(const key of ['show_fill','fill_fade','show_hover_line','show_legend']) if(typeof result[key]!=='boolean') throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
  if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
  const stops=result.gradient_stops??[];
  if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
@@ -232,9 +293,11 @@ function validateConfig(config) {
  result.gradient_mode=result.gradient_mode??'smooth';
  if(!['smooth','steps'].includes(result.gradient_mode)) throw new Error('gradient_mode');
  result.graph_mode=result.graph_mode??'lines';
+ result.data_source=result.data_source??'auto';
+ if(!['auto','history','statistics'].includes(result.data_source))throw new Error('data_source');
  result.aggregation_period=result.aggregation_period??'none';result.aggregation_method=result.aggregation_method??'avg';
  if(!['none','minute','quarter_hour','hour','day','week','month'].includes(result.aggregation_period))throw new Error('aggregation_period');
- if(!['min','max','avg'].includes(result.aggregation_method))throw new Error('aggregation_method');
+ if(!['min','max','avg','delta'].includes(result.aggregation_method))throw new Error('aggregation_method');
  if(!['lines','stacked'].includes(result.graph_mode))throw new Error('graph_mode');
  const options=result.series_options??[];
  if(!Array.isArray(options)||options.some(s=>!s||!entities.includes(s.entity)||(s.name!=null&&typeof s.name!=='string')||(s.color!=null&&s.color!==''&&!validColor(s.color)))||new Set(options.map(s=>s.entity)).size!==options.length)throw new Error('series_options');
@@ -242,7 +305,7 @@ function validateConfig(config) {
   if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
   if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
   for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
-  for(const key of ['show_fill','fill_fade'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
   if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
   if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
   if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
@@ -264,6 +327,47 @@ function gradientColor(stops,value,mode='smooth'){
   color=rgb(b.color);
  }
  return `rgb(${color.join(',')})`;
+}
+// Statistics are hourly or calendar summaries, never exact raw readings or Delta.
+function statisticsPeriod(config){
+ const source=config.data_source??'auto',period=config.aggregation_period??'none';
+ const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method??'avg')!=='delta';
+ if(source==='statistics'&&!supported)throw new Error('statistics_config');
+ if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48))return null;
+ return period==='none'?'hour':period;
+}
+// HA has used epoch seconds and milliseconds across Recorder versions.
+function statisticTime(value){return typeof value==='number'?(value<1e12?value*1000:value):Date.parse(value);}
+async function loadHistorySeries(hass,config,start,end){
+ const period=statisticsPeriod(config),strict=config.data_source==='statistics',selected=new Map();
+ if(period){
+  try{
+   const metadata=await hass.callWS({type:'recorder/get_statistics_metadata',statistic_ids:config.entities});
+   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
+   if(strict&&ids.length!==config.entities.length)throw new Error('statistics_unavailable');
+   if(ids.length){
+    const field=config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+    const response=await hass.callWS({type:'recorder/statistics_during_period',statistic_ids:ids,start_time:new Date(start).toISOString(),end_time:new Date(end).toISOString(),period,types:[field]});
+    for(const id of ids){
+     if(!Array.isArray(response[id])){if(strict)throw new Error('statistics_unavailable');continue;}
+     const points=[];
+     // End every bin explicitly: missing bins and unfinished tails stay gaps.
+     for(const row of [...response[id]].sort((a,b)=>statisticTime(a.start)-statisticTime(b.start))){
+      const a=Math.max(start,statisticTime(row.start)),b=Math.min(end,statisticTime(row.end));
+      if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)continue;
+      points.push({t:a,v:typeof row[field]==='number'&&Number.isFinite(row[field])?row[field]:null},{t:b,v:null});
+     }
+     if(points.some(p=>p.v!==null)||strict)selected.set(id,{id,source:'statistics',points:[...new Map(points.map(p=>[p.t,p])).values()].sort((a,b)=>a.t-b.t)});
+    }
+   }
+  }catch(error){if(strict)throw error;selected.clear();}
+ }
+ const missing=config.entities.filter(id=>!selected.has(id));
+ if(missing.length){
+  const response=await hass.callApi('GET',historyUrl({...config,entities:missing},end));
+  for(const s of decodeHistory(response,missing,start,end))selected.set(s.id,s);
+ }
+ return config.entities.map(id=>selected.get(id));
 }
 function numericState(state) {
  if(typeof state!=='string'||state.trim()==='') return null;
@@ -306,8 +410,43 @@ function seriesMetadata(hass,entities,options=[]) {
   const option=options.find(s=>s.entity===id);
   return {id,name:option?.name||state.attributes?.friendly_name||id,unit:state.attributes?.unit_of_measurement??''};
  });
- if(items.some(item=>item.unit!==items[0].unit)) throw new Error('unit');
- return {items,unit:items[0].unit};
+ return {items,unit:items[0]?.unit??''};
+}
+// Group by exact unit, never add or scale incompatible quantities together.
+function graphAxes(series,meta,config,start,end,visible=series.map(()=>true)){
+ const units=[...new Set(meta.items.filter((_,i)=>visible[i]).map(item=>item.unit))];
+ if(!units.length)units.push(meta.items[0]?.unit??'');
+ const seriesAxes=meta.items.map(item=>units.indexOf(item.unit));
+ const plotSeries=config.graph_mode==='stacked'?series.slice():series;
+ const axes=units.map((unit,index)=>{
+  const indices=seriesAxes.flatMap((axis,i)=>axis===index&&visible[i]?[i]:[]);
+  let group=indices.map(i=>series[i]);
+  if(config.graph_mode==='stacked'){
+   group=stackSeries(group,start,end);
+   indices.forEach((i,j)=>{plotSeries[i]=group[j];});
+  }
+  return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
+ });
+ return {axes:alignZeroAxes(axes,config,meta.items[0]?.unit),seriesAxes,plotSeries};
+}
+// Expand only negative axes; never rescale readings or clip the original ranges.
+function alignZeroAxes(axes,config={},primaryUnit=axes[0]?.unit){
+ if(config.align_zero===false)return axes;
+ const negative=axes.filter(a=>a.min<0);
+ if(negative.length<2)return axes;
+ const primary=negative.find(a=>a.unit===primaryUnit);
+ const fixed=primary&&[config.y_min,config.y_max].some(Number.isFinite);
+ const fraction=a=>-a.min/(a.max-a.min);
+ // Explicit first-unit bounds win, including bounds that exclude zero.
+ if(fixed&&(primary.max<0||(primary.max===0&&negative.some(a=>a.max>0))))return axes;
+ const part=fixed?fraction(primary):negative.reduce((sum,a)=>sum+Math.min(1,fraction(a)),0)/negative.length;
+ return axes.map(a=>{
+  if(a.min>=0||(fixed&&a===primary))return a;
+  const span=Math.max(-a.min/part,part===1?0:Math.max(0,a.max)/(1-part));
+  const min=-span*part,max=part===1?0:span*(1-part);
+  const options={y_min:min,y_max:max,...(a.unit===primaryUnit&&config.y_step!=null?{y_step:config.y_step}:{})};
+  return {unit:a.unit,...yAxis([],options)};
+ });
 }
 function yRange(series,config={}) {
  let min=Infinity,max=-Infinity;
@@ -322,6 +461,24 @@ function yRange(series,config={}) {
   else min=max-Math.max(1,Math.abs(max)*0.05);
  }
  return [min,max];
+}
+// Preserve yRange's padding contract; only the displayed axis uses nice steps.
+function yAxis(series,config={}){
+ if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
+ let [min,max]=yRange(series,config);
+ const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
+ const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
+ const clean=value=>Number(value.toPrecision(15));
+ // Snap only floating-point noise at integral step indices (e.g. 0.3 / 0.1).
+ const index=value=>{const n=value/step,nearest=Math.round(n);return Math.abs(n-nearest)<=Number.EPSILON*Math.max(1,Math.abs(n))*4?nearest:n;};
+ if(!Number.isFinite(config.y_min))min=clean(Math.floor(index(min))*step);
+ if(!Number.isFinite(config.y_max))max=clean(Math.ceil(index(max))*step);
+ const first=Math.ceil(index(min)),last=Math.floor(index(max));
+ const count=Math.max(0,last-first+1);
+ if(!Number.isFinite(count)||count>200||!Number.isFinite(min)||!Number.isFinite(max)||!Number.isFinite(max-min)||!(max>min))throw new Error('y_step_count');
+ const ticks=Array.from({length:count},(_,i)=>clean((first+i)*step));
+ if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
+ return {min,max,step,ticks};
 }
 const zoneFormats=new Map();
 function localParts(t,zone){
@@ -349,10 +506,18 @@ function periodBounds(t,period,zone='UTC'){
 function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
  if(period==='none')return series;
  const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
- return series.map(s=>{const points=[];let index=0;
+ return series.map(s=>{if(s.source==='statistics')return s;const points=[];let index=0;
   for(const [a,b] of bounds){let cursor=a,total=0,duration=0,min=Infinity,max=-Infinity;
    while(index<s.points.length&&s.points[index].t<=a)index++;
-   let value=index?s.points[index-1].v:null;const fragments=[{t:a,valid:value!==null}];
+   let value=index?s.points[index-1].v:null;
+   if(method==='delta'){
+    const first=value;let valid=Number.isFinite(first);
+    // Recorder holds each reading until the next one. Include an exact end
+    // boundary once as this bin's end and the following bin's start.
+    while(index<s.points.length&&s.points[index].t<=b){value=s.points[index++].v;valid&&=Number.isFinite(value);}
+    points.push({t:a,v:valid?value-first:null});continue;
+   }
+   const fragments=[{t:a,valid:value!==null}];
    while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
    const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
    for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
@@ -388,8 +553,13 @@ function historyUrl(config,end) {
 
 // src/localization.js
 const translations={
- title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. All sensors must use the same unit.','Historische periode: 1–8760 uur. Alle sensoren moeten dezelfde eenheid hebben.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
+ title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. Each different unit gets its own Y-axis.','Historische periode: 1–8760 uur. Iedere verschillende eenheid krijgt een eigen Y-as.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
 Object.assign(translations,{
+ show_title:['Show title','Titel tonen'],
+ data_source:['Data source','Gegevensbron'],auto:['Automatic','Automatisch'],history:['Raw history','Ruwe historie'],statistics:['Statistics','Statistics'],
+ data_sourceHelper:['Automatic: statistics beyond 48 hours, raw history otherwise. Unsupported sensors fall back to history. Statistics use hour/day/week/month summaries (None uses hour); minute, quarter-hour and Delta require history.','Automatisch: statistics boven 48 uur, anders ruwe historie. Sensoren zonder ondersteuning vallen terug op historie. Statistics gebruikt uur/dag/week/maand (Geen gebruikt uur); minuut, kwartier en Delta vereisen historie.'],
+ statistics_config:['Statistics requires hour, day, week or month (None uses hour), and minimum, maximum or average. Choose History for minute, quarter-hour or Delta.','Statistics vereist uur, dag, week of maand (Geen gebruikt uur), met minimum, maximum of gemiddelde. Kies Historie voor minuut, kwartier of Delta.'],
+ statistics_unavailable:['Statistics unavailable for a selected sensor or its unit. Choose Automatic or History.','Statistics ontbreekt voor een gekozen sensor of zijn eenheid. Kies Automatisch of Historie.'],
  zoom:['Zoom','Zoom'],zoom_in:['Zoom in','Inzoomen'],zoom_out:['Zoom out','Uitzoomen'],zoom_reset:['Reset zoom','Zoom herstellen'],
  aggregation_period:['Aggregation period','Aggregatieperiode'],aggregation_method:['Aggregation method','Aggregatiemethode'],none:['None (raw history)','Geen (ruwe historie)'],minute:['Minute','Minuut'],quarter_hour:['Quarter hour','Kwartier'],hour:['Hour','Uur'],day:['Day','Dag'],week:['Week (Monday)','Week (maandag)'],month:['Month','Maand'],min:['Minimum','Minimum'],max:['Maximum','Maximum'],avg:['Time-weighted average','Tijdgewogen gemiddelde'],
  aggregation_periodHelper:['Applied separately to every sensor in the Home Assistant timezone. Zoom does not change it.','Per sensor toegepast in de Home Assistant-tijdzone. Zoom verandert dit niet.'],
@@ -402,9 +572,15 @@ Object.assign(translations,{
  hover_sync_groupHelper:['Cards with the same group follow each other. Empty uses the default group.','Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'],
  line_interpolation:['Line interpolation','Lijnverloop'],interpolation_smooth:['Smooth','Vloeiend'],interpolation_linear:['Linear','Recht'],interpolation_step:['Stepped','Trapvormig'],
  line_interpolationHelper:['Display only: connects recorded points. Unavailable gaps remain gaps.','Alleen weergave: verbindt geregistreerde punten. Niet-beschikbare waarden blijven gaten.'],
+ y_step_error:['Invalid Y-axis step: enter a finite positive number or leave it empty for automatic steps.','Ongeldige stapgrootte Y-as: voer een eindig positief getal in of laat leeg voor automatische stappen.'],
+ y_step_count:['Y-axis step cannot be drawn (maximum 200 ticks or numeric precision exceeded). Increase the step or narrow the Y-axis bounds.','Stapgrootte Y-as kan niet worden getekend (maximaal 200 maatstreepjes of numerieke precisie overschreden). Vergroot de stap of verklein het Y-asbereik.'],
+ align_zero:['Align zero points','Nulpunten uitlijnen'],
+ align_zeroHelper:['Align zero on negative Y-axes. Explicit first-axis bounds take priority.','Zet de nulpunten van negatieve Y-assen op dezelfde hoogte. Handmatige grenzen van de eerste as gaan voor.'],
+ y_axis:['Y-axis','Y-as'],y_step:['Y-axis step','Stapgrootte Y-as'],
+ y_stepHelper:['Optional positive tick interval in the sensor unit. Empty uses round 1/2/5 steps automatically. Maximum 200 ticks; increase the step or narrow the bounds if exceeded.','Optionele positieve stapgrootte in de sensoreenheid. Leeg kiest automatisch ronde 1/2/5-stappen. Maximaal 200 maatstreepjes; vergroot de stap of verklein het bereik bij overschrijding.'],
  y_min:['Y-axis minimum','Minimum Y-as'],y_max:['Y-axis maximum','Maximum Y-as'],
- y_minHelper:['Optional. Empty scales automatically. Uses the sensor unit.','Optioneel. Leeg schaalt automatisch. Gebruikt de sensoreenheid.'],
- y_maxHelper:['Optional. Empty scales automatically. Must exceed the minimum.','Optioneel. Leeg schaalt automatisch. Moet hoger zijn dan het minimum.'],
+ y_minHelper:['Optional, in the first sensor’s unit. Empty scales automatically. Other units have independent automatic axes.','Optioneel, in de eenheid van de eerste sensor. Leeg schaalt automatisch. Andere eenheden hebben eigen automatische assen.'],
+ y_maxHelper:['Optional, for the first sensor’s unit. Empty scales automatically. Must exceed the minimum.','Optioneel, voor de eenheid van de eerste sensor. Leeg schaalt automatisch. Moet hoger zijn dan het minimum.'],
  appearance:['Line and fill','Lijn en vulling'],line_style:['Line style','Lijnstijl'],line_width:['Line width','Lijndikte'],line_color:['Fixed line color','Vaste lijnkleur'],show_fill:['Fill below line','Vulling onder lijn'],fill_opacity:['Fill opacity','Dekking vulling'],fill_fade:['Fade fill','Vulling vervagen'],show_hover_line:['Show hover guide','Aanwijslijn tonen'],gradient_mode:['Color transitions','Kleurovergang'],gradient_stops:['Color stops','Kleurovergangen'],stop_value:['Sensor value','Sensorwaarde'],stop_color:['Color','Kleur'],solid:['Solid','Doorgetrokken'],dashed:['Dashed','Gestreept'],dotted:['Dotted','Gestippeld'],smooth:['Smooth gradient','Vloeiende gradiënt'],steps:['Hard transitions','Harde overgangen'],
  fill_color:['Fixed fill color','Vaste vulkleur'],fill_colorHelper:['Optional. Empty follows the line color or gradient.','Optioneel. Leeg volgt de lijnkleur of gradiënt.'],
  hours_to_showHelper:translations.hoursHelper,
@@ -415,6 +591,7 @@ Object.assign(translations,{
 });
 Object.assign(translations,{
  graph_settings:['Graph','Grafiek'],show_legend:['Show legend','Legenda tonen'],data_processing:['Data processing','Dataverwerking'],series_line:['Line','Lijn'],series_fill:['Fill','Vulling'],
+ visible:['Show by default','Standaard tonen'],visibleHelper:['Initial visibility. Click the sensor in the legend to show or hide it temporarily.','Beginweergave. Klik op de sensor in de legenda om deze tijdelijk te tonen of verbergen.'],show_sensor:['Show','Toon'],hide_sensor:['Hide','Verberg'],no_visible:['All sensors are hidden. Enable a sensor in the legend.','Alle sensoren zijn verborgen. Zet een sensor aan via de legenda.'],
  color_mode:['Line color','Lijnkleur'],color_fixed:['Fixed color','Vaste kleur'],color_gradient:['Color stops','Kleurovergangen'],color:['Line color','Lijnkleur'],
  fill_mode:['Fill color','Vulkleur'],fill_line:['Follow line','Volg lijn'],fill_own:['Own color','Eigen kleur'],
  add_sensor:['Add sensor','Sensor toevoegen'],new_sensor:['New sensor','Nieuwe sensor'],add_sensorHelper:['Add a sensor to configure its name, line and fill.','Voeg een sensor toe om naam, lijn en vulling in te stellen.'],
@@ -432,7 +609,13 @@ Object.assign(translations,{
 translations.config=['Invalid configuration: check sensors, hours, Y-axis bounds, appearance and color stops.','Ongeldige configuratie: controleer sensoren, uren, Y-asgrenzen, lijnopties en kleurovergangen.'];
 function language(hass){return String(hass?.locale?.language??hass?.language??'en').toLowerCase().startsWith('nl')?'nl':'en';}
 function text(key,lang){return translations[key]?.[lang==='nl'?1:0]??key;}
-function number(value,lang){return new Intl.NumberFormat(lang==='nl'?'nl-NL':'en-GB',{maximumFractionDigits:2}).format(value);}
+function number(value,lang,axis=false){
+ const small=value!==0&&Math.abs(value)<0.01;
+ return new Intl.NumberFormat(lang==='nl'?'nl-NL':'en-GB',{
+  ...(axis?{maximumSignificantDigits:15}:small?{maximumSignificantDigits:4}:{maximumFractionDigits:2}),
+  ...(value!==0&&(Math.abs(value)<0.0001||axis&&Math.abs(value)>=1e6)?{notation:'scientific'}:{})
+ }).format(Object.is(value,-0)?0:value);
+}
 function time(value,lang,timeZone,full=false){return new Intl.DateTimeFormat(lang==='nl'?'nl-NL':'en-GB',{timeZone,hour:'2-digit',minute:'2-digit',hourCycle:'h23',...(full?{day:'numeric',month:'short'}:{})}).format(new Date(value));}
 function escapeHtml(value){return String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');}
 function frontendHass(){return globalThis.document?.querySelector('home-assistant')?.hass;}
@@ -471,7 +654,8 @@ const REFRESH_MS=60000;
 // Native controls, with one independently owned appearance form per sensor.
 class HistoryGraphEditor extends HTMLElement {
  constructor(){super();this.attachShadow({mode:'open'});}
- setConfig(config){this._data=editorConfig(config);this._render();}
+ _editorConfig(config){return editorConfig(config);}
+ setConfig(config){this._data=this._editorConfig(config);this._render();}
  set hass(hass){this._hass=hass;this._render();}
  get hass(){return this._hass;}
  connectedCallback(){this._render();}
@@ -495,7 +679,7 @@ class HistoryGraphEditor extends HTMLElement {
     this._data={...this._data,entities:[...this._data.entities,row]};this._openNew=true;this._render();
    };
   }
-  this._bind(this._form,HistoryGraphCard.getConfigForm(),this._data);
+  this._bind(this._form,(this.constructor.cardClass??HistoryGraphCard).getConfigForm(),this._data);
   const lang=language(this._hass),label=key=>text(key,lang),container=this.shadowRoot.querySelector('.sensors');
   this.shadowRoot.querySelector('.sensors-heading').textContent=label('entities');
   this.shadowRoot.querySelector('.empty').textContent=this._data.entities.length?'':label('add_sensorHelper');
@@ -525,7 +709,7 @@ class HistoryGraphEditor extends HTMLElement {
    const cssColor=c=>Array.isArray(c)?`rgb(${c.join(',')})`:c;
    entry.querySelector('.swatch').style.background=row.color_mode==='gradient'&&row.gradient_stops.length?`linear-gradient(to right,${row.gradient_stops.map(s=>cssColor(s.color)).join(',')})`:cssColor(row.color);
    for(const key of ['up','down','remove']){const button=entry.querySelector('.'+key);button.textContent=label('sensor_'+key);button.setAttribute('aria-label',`${label('sensor_'+key)}: ${name}`);button.disabled=key==='up'?index===0:key==='down'?index===this._data.entities.length-1:false;}
-   this._bind(entry.querySelector('ha-form'),HistoryGraphCard.getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
+   this._bind(entry.querySelector('ha-form'),(this.constructor.cardClass??HistoryGraphCard).getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
   });
   this._openNew=false;
  }
@@ -549,17 +733,23 @@ class HistoryGraphCard extends HTMLElement {
   const select=keys=>({select:{mode:'dropdown',get options(){return keys.map(value=>({value,label:label(value)}));}}});
   return this._formContract([
    {name:'title',selector:{text:{}}},
+   {name:'show_title',default:true,selector:{boolean:{}}},
    {name:'hours_to_show',selector:{number:{min:1,max:8760,step:0.5,mode:'box'}}},
    {type:'expandable',name:'graph_settings',get title(){return label('graph_settings');},flatten:true,schema:[
     {name:'graph_mode',default:'lines',selector:select(['lines','stacked'])},
     {name:'show_legend',default:true,selector:{boolean:{}}},
     {name:'show_hover_line',default:true,selector:{boolean:{}}},
     {name:'sync_hover',default:true,selector:{boolean:{}}},
-    {name:'hover_sync_group',selector:{text:{}}},
+    {name:'hover_sync_group',selector:{text:{}}}
+   ]},
+   {type:'expandable',name:'y_axis',get title(){return label('y_axis');},flatten:true,schema:[
     {name:'y_min',selector:{number:{step:'any',mode:'box'}}},
-    {name:'y_max',selector:{number:{step:'any',mode:'box'}}}
+    {name:'y_max',selector:{number:{step:'any',mode:'box'}}},
+    {name:'y_step',selector:{number:{step:'any',mode:'box'}}},
+    {name:'align_zero',default:true,selector:{boolean:{}}}
    ]},
    {type:'expandable',name:'data_processing',get title(){return label('data_processing');},flatten:true,schema:[
+    {name:'data_source',default:'auto',selector:select(['auto','history','statistics'])},
     {name:'aggregation_period',default:'none',selector:select(['none','minute','quarter_hour','hour','day','week','month'])},
     {name:'aggregation_method',default:'avg',selector:select(['min','max','avg'])}
    ]}
@@ -574,6 +764,7 @@ class HistoryGraphCard extends HTMLElement {
   return this._formContract([
    {name:'entity',required:true,selector:{entity:{domain:'sensor'}}},
    {name:'name',selector:{text:{}}},
+   {name:'visible',default:true,selector:{boolean:{}}},
    {type:'expandable',name:'series_line',get title(){return label('series_line');},flatten:true,expanded:true,schema:[
     ...(rows.filter(s=>s.entity).length>1?[{name:'line_style_source',selector:sourceSelector}]:[]),
     ...(!row.line_style_source?[
@@ -611,7 +802,9 @@ class HistoryGraphCard extends HTMLElement {
  _gradient(min,max,y){
   const c=this._config;
   const gradients=c.entities.map((_,index)=>{
+   if(!this._isSeriesVisible(index))return '';
    const {stops,mode}=this._seriesAppearance(index);if(!stops.length)return '';
+   if(this._axes){({min,max}=this._axes[this._seriesAxes[index]]);y=v=>(max-v)/(max-min)*300;}
    const values=[max,...stops.map(s=>s.value).filter(v=>v>min&&v<max).reverse(),min];
    const markup=values.map((v,i)=>{const offset=y(v)/3;const high=gradientColor(stops,v,mode);const low=mode==='steps'&&i>0&&i<values.length-1?gradientColor(stops,v-Math.max(1,Math.abs(v))*Number.EPSILON*4,mode):high;return `<stop offset="${offset}%" stop-color="${high}"/>${low!==high?`<stop offset="${offset}%" stop-color="${low}"/>`:''}`;}).join('');
    return `<linearGradient id="history-colors-${index}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="300">${markup}</linearGradient>`;
@@ -636,7 +829,16 @@ class HistoryGraphCard extends HTMLElement {
  static getStubConfig(hass){const ids=Object.keys(hass?.states??{}).filter(id=>id.startsWith('sensor.')&&Number.isFinite(Number(hass.states[id].state))&&hass.states[id].state!=='');return {entities:ids.slice(0,1),hours_to_show:24};}
  getGridOptions(){return {rows:6,columns:12,min_rows:4,min_columns:6};}
  getCardSize(){return 6;}
- setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
+ _isSeriesVisible(index){const id=this._config.entities[index];return this._visibility?.get(id)??(this._config.series_options.find(s=>s.entity===id)?.visible??true);}
+ _toggleSeries(id){
+  const index=this._config.entities.indexOf(id);if(index<0)return;
+  this._visibility??=new Map();this._visibility.set(id,!this._isSeriesVisible(index));this._hideTooltip();this._render();
+  queueMicrotask(()=>this.shadowRoot.querySelector?.(`button[data-series="${id}"]`)?.focus({preventScroll:true}));
+ }
+ setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message==='y_step'?'y_step_error':error.message==='y_step_count'?'y_step_count':error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}
+  const previous=this._config,visibility=this._visibility;
+  this._visibility=new Map(validated.entities.map(id=>{const initial=validated.series_options.find(s=>s.entity===id)?.visible??true,old=previous?.series_options.find(s=>s.entity===id)?.visible??true;return [id,initial===old&&visibility?.has(id)?visibility.get(id):initial];}));
+  SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(hass){this._hass=hass;if(!this._config)return;let signature;try{const meta=seriesMetadata(hass,this._config.entities);signature=JSON.stringify([meta,language(hass),hass.config?.time_zone]);}catch(e){signature=e.message;}
   if(signature!==this._signature){this._signature=signature;this._render();}
   if(this._connected&&!this._started)this._refresh();
@@ -661,49 +863,61 @@ class HistoryGraphCard extends HTMLElement {
   this._status='loading';this._render();let timeout;
   try{
    seriesMetadata(hass,config.entities);
-   const response=await Promise.race([hass.callApi('GET',historyUrl(config,end)),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
+   const response=await Promise.race([loadHistorySeries(hass,config,start,end),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
    if(generation!==this._generation||!this._connected)return;
    seriesMetadata(this._hass,config.entities);
-   this._series=decodeHistory(response,config.entities,start,end);this._rawSeries=this._series;this._start=start;this._end=end;
+   this._series=response;this._rawSeries=this._series;this._start=start;this._end=end;
    this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';
-  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit'].includes(e.message)?e.message:'error';this._series=[];}
+  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
   finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),REFRESH_MS);this._timer.unref?.();}}
  }
+ _getGraphAxes(series,meta,visible){return graphAxes(series,meta,this._config,this._start,this._end,visible);}
  _render(){
   if(!this._config)return;const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
   let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
   const title=this._config.title??text('title',lang);let content='';
-  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
+  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
   else{
    this._rawSeries??=this._series;
    const key=JSON.stringify([this._start,this._end,this._zone,this._config.aggregation_period,this._config.aggregation_method]);
    if(this._processedRaw!==this._rawSeries||this._processedKey!==key){this._series=aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);this._processedRaw=this._rawSeries;this._processedKey=key;}
-   if(this._plotSource!==this._series||this._plotMode!==this._config.graph_mode){this._plotSeries=this._config.graph_mode==='stacked'?stackSeries(this._series,this._start,this._end):this._series;this._plotSource=this._series;this._plotMode=this._config.graph_mode;}
-   this._meta=meta;const [min,max]=yRange(this._plotSeries,this._config);this._range=[min,max];
+   const visible=this._config.entities.map((_,i)=>this._isSeriesVisible(i)),anyVisible=visible.some(Boolean);
+   const axisKey=JSON.stringify([meta.items.map(item=>item.unit),this._config.graph_mode,this._config.y_min,this._config.y_max,this._config.y_step,this._config.align_zero,visible]);
+   let grouped;try{if(this._axisSource!==this._series||this._axisKey!==axisKey){this._axisGroups=this._getGraphAxes(this._series,meta,visible);this._axisSource=this._series;this._axisKey=axisKey;}grouped=this._axisGroups;}catch(error){if(!['y_step','y_step_count'].includes(error.message))throw error;this._status=error.message==='y_step'?'y_step_error':error.message;this._range=null;this._render();return;}
+   this._meta=meta;this._axes=grouped.axes;this._seriesAxes=grouped.seriesAxes;this._plotSeries=grouped.plotSeries;
+   const {min,max}=this._axes[0];this._range=[min,max];
+   const extra=this._axes.length-1,mixed=new Set(meta.items.map(item=>item.unit)).size>1;
    this._viewStart=Math.max(this._start,this._viewport?.[0]??this._start);this._viewEnd=Math.min(this._end,this._viewport?.[1]??this._end);
    if(this._viewEnd<=this._viewStart){this._viewport=null;this._viewStart=this._start;this._viewEnd=this._end;}
    const x=t=>(t-this._viewStart)/(this._viewEnd-this._viewStart)*1000,y=v=>(max-v)/(max-min)*300;
-   const axes=Array.from({length:5},(_,i)=>{const ratio=i/4;return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px)">${escapeHtml(number(max-(max-min)*ratio,lang))}</span>`;}).join('');
-   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" style="left:calc(${i/3*100}% + ${44-i/3*56}px)">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
+   const axes=this._axes.map((axis,index)=>{
+    const position=index?`left:auto;right:calc(12px + ${index-1} * var(--axis-column));width:var(--axis-column);max-width:var(--axis-column);text-align:right;`:'';
+    const unit=mixed?`<span class="axis-unit" style="${position}">${escapeHtml(axis.unit||'—')}</span>`:'';
+    return unit+[...axis.ticks].reverse().map(value=>{const ratio=(axis.max-value)/(axis.max-axis.min);return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px);${position}">${escapeHtml(number(value,lang,true))}</span>`;}).join('');
+   }).join('');
+   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
 
    const display=this._plotSeries.map(s=>({...s,points:displayPoints(s.points,this._viewStart,this._viewEnd)}));
+   const seriesY=i=>{const a=this._axes[this._seriesAxes[i]];return v=>(a.max-v)/(a.max-a.min)*300;};
    this._graph??=new SharedGraph();
    const graph=this._graph.render(this,{
     viewBox:'0 0 1000 300',defs:this._gradient(min,max,y),
-    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,y,i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
-    lines:display.map((s,i)=>({d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,y,i),className:'series-line',entity:s.id,appearance:this._appearance(i)})),
+    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!visible[i]||!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,seriesY(i),i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
+    lines:display.flatMap((s,i)=>visible[i]?[{d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,seriesY(i),i),className:'series-line',entity:s.id,appearance:this._appearance(i)}]:[]),
    });
-   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<span class="legend-item"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}</strong></span>`;}).join('');
-   const missing=meta.items.filter((_,i)=>!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
-   content=`${this._config.show_legend?`<div class="legend">${legend}<span class="unit">${escapeHtml(meta.unit)}</span></div>`:`<div class="data-status">${escapeHtml(meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" tabindex="0" role="group" aria-label="${text('chart',lang)}">${axes}${times}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
+   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
+   const missing=meta.items.filter((_,i)=>visible[i]&&!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
+   content=`${this._config.show_legend?`<div class="legend">${legend}${mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`}</div>`:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
   }
-  const controls=this._status==='ready'?`<div class="zoom-controls" role="group" aria-label="${text('zoom',lang)}">${[['in','+'],['out','−'],['reset','↺']].map(([action,label])=>`<button data-zoom="${action}" title="${text('zoom_'+action,lang)}" aria-label="${text('zoom_'+action,lang)}">${label}</button>`).join('')}</div>`:'';
-  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${title?`<header><h2>${escapeHtml(title)}</h2></header>`:''}${controls}${content}</div></ha-card>`;
+  const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang});
+  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${controls}${content}</div></ha-card>`;
+  this.shadowRoot.querySelectorAll?.('[data-series]').forEach(button=>button.onclick=()=>this._toggleSeries(button.dataset.series));
   this.shadowRoot.querySelectorAll?.('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:0.5,out:2,reset:0}[button.dataset.zoom]));
   this._graph?.restore(this);
   const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this._pinned=false;this._bindInteractions();
   this._syncElf();SharedGraph.restoreHover(this);
  }
+ _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-this._config.hours_to_show*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
  _zoom(factor){
   this._hideTooltip();if(!factor)this._viewport=null;
   else{const a=this._viewStart??this._start,b=this._viewEnd??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2;
@@ -723,7 +937,7 @@ class HistoryGraphCard extends HTMLElement {
    if(e.key==='Escape'){this._hideTooltip();return;}
    if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();
    const a=this._viewStart??this._start,b=this._viewEnd??this._end;
-   const timeline=[...new Set([a,...this._series.flatMap(s=>s.points.map(p=>p.t)).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
+   const timeline=[...new Set([a,...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t):[]).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
    let index=timeline.findIndex(t=>t>=(this._cursor??this._start));if(index<0)index=timeline.length-1;
    if(e.key==='Home')index=0;else if(e.key==='End')index=timeline.length-1;else index=Math.max(0,Math.min(timeline.length-1,index+(e.key==='ArrowRight'?1:-1)));
    this._pinned=true;this._showTooltip(timeline[index]);
@@ -732,12 +946,15 @@ class HistoryGraphCard extends HTMLElement {
  _receiveHover(timestamp){if(timestamp===null||timestamp<(this._viewStart??this._start)||timestamp>(this._viewEnd??this._end)){this._hideTooltip(false);return;}this._showTooltip(timestamp,false);}
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._cursor=null;this._pinned=false;const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;const tooltip=chart.querySelector('.tooltip');if(tooltip)tooltip.hidden=true;const markers=chart.querySelector('.markers');if(markers)markers.innerHTML='';const guide=chart.querySelector('.guide');if(guide)guide.hidden=true;}
  _showTooltip(timestamp,publish=true){
+  if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;this._cursor=timestamp;
   const tooltip=chart.querySelector('.tooltip'),plot=chart.querySelector('.plot');const box=chart.getBoundingClientRect(),p=plot.getBoundingClientRect();
   const px=p.left-box.left+(timestamp-(this._viewStart??this._start))/((this._viewEnd??this._end)-(this._viewStart??this._start))*p.width;
-  const [min,max]=this._range;const positions=[];
-  const rows=this._series.map((s,i)=>{const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return `${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.unit}`}`;});
-  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map(row=>`<span>${escapeHtml(row)}</span>`).join('')}`;tooltip.hidden=false;
+  const positions=[];
+  const rows=this._series.flatMap((s,i)=>{if(!this._isSeriesVisible(i))return [];const {min,max}=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return [`${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.items[i].unit??this._meta.unit}`}`];});
+  if(!rows.length){this._hideTooltip(publish);return;}
+  const colors=this._series.flatMap((s,i)=>this._isSeriesVisible(i)?[this._appearance(i,valueAt(s.points,timestamp)).color]:[]);
+  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map((row,i)=>`<span><i style="background:${escapeHtml(colors[i])}"></i><b>${escapeHtml(row)}</b></span>`).join('')}`;tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';
   tooltip.style.maxHeight=`${Math.max(0,box.height-8)}px`;
   const measured=tooltip.getBoundingClientRect();let left=Math.max(4,Math.min(box.width-measured.width-4,px+14));
   if(px+14+measured.width>box.width-4)left=Math.max(4,px-measured.width-14);
@@ -750,31 +967,32 @@ class HistoryGraphCard extends HTMLElement {
   if(publish)SharedGraph.publishHover(this,timestamp);
  }
  _styles(){return `
- :host{display:block;height:100%;min-width:0;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
+ :host{display:block;height:100%;min-width:0;container-type:inline-size;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
  ha-card{height:100%;display:flex;flex-direction:column;background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,inherit)}
  .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;padding:16px 16px 12px;line-height:1.4}
- h2{margin:0;font-size:var(--font-size-title);line-height:1.25;font-weight:650;letter-spacing:-.01em}
- header{padding-right:106px}.zoom-controls{position:absolute;right:12px;top:10px;display:flex;gap:2px}.zoom-controls button{width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color);font:20px inherit;cursor:pointer}.zoom-controls button:hover,.zoom-controls button:focus-visible{background:var(--secondary-background-color);outline:1px solid var(--divider-color)}
- .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:12px 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
- .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+ ${cardHeaderStyles()}
+ .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:0 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
+ .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;border:0;padding:4px 0;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer;border-radius:4px}.legend-item[aria-pressed="false"]{opacity:.45}.legend-item[aria-pressed="false"]>span{text-decoration:line-through}.legend-item:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}.empty-visibility{position:absolute;inset:22px 12px 30px 44px;display:flex;align-items:center;justify-content:center;color:var(--secondary-text-color);font-size:12px;text-align:center;pointer-events:none}
  .legend i{width:15px;flex-shrink:0;border-top:3px solid var(--series-color)}.unit{margin-left:auto;font-weight:600}
  .data-status{font-size:11px;color:var(--secondary-text-color);margin-top:3px}
  .chart{position:relative;flex:1;min-height:120px;height:260px;margin-top:4px;outline:none;touch-action:pan-y}
  .chart:focus-visible{box-shadow:inset 0 0 0 2px var(--primary-color);border-radius:8px}
- .plot{position:absolute;left:44px;right:12px;top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
+ .plot{position:absolute;left:44px;right:calc(12px + var(--axes-right,0px));top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
  .axis-y,.axis-x{position:absolute;color:var(--secondary-text-color);font-size:11px;line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}.axis-y{left:0;transform:translateY(-50%);max-width:40px;overflow:hidden;text-overflow:ellipsis}.axis-x{bottom:4px;transform:translateX(-50%)}.axis-x:last-of-type{transform:translateX(-100%)}
- .tooltip{overflow-y:auto;position:absolute;z-index:3;padding:9px 11px;border:1px solid var(--divider-color);border-radius:8px;background:var(--card-background-color);box-shadow:0 5px 16px #0003;pointer-events:auto;font-size:12px;font-variant-numeric:tabular-nums;box-sizing:border-box;max-width:calc(100% - 8px)}.tooltip strong,.tooltip span{display:block}.tooltip span{overflow-wrap:anywhere}.tooltip strong{margin-bottom:4px}.tooltip[hidden]{display:none}
+ .axis-unit{position:absolute;left:0;top:2px;max-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color);font-size:10px;font-weight:600}
+ ${SharedGraph.tooltipStyles()}
  .state{display:flex;flex:1;height:260px;flex-direction:column;justify-content:center;align-items:flex-start;gap:8px;min-height:120px;font-size:14px;color:var(--secondary-text-color)}.retry{font:inherit;border:1px solid var(--divider-color);border-radius:6px;background:var(--secondary-background-color);color:var(--primary-text-color);min-height:44px;padding:0 12px;cursor:pointer}
  .guide{position:absolute;top:22px;bottom:30px;border-left:1px dashed var(--secondary-text-color);pointer-events:none}.guide[hidden]{display:none}
  .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none}.zoom-selection[hidden]{display:none}
  .sr-only{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
  ${elevenStyles()}
  ${graphStyles()}
+ @container(max-width:480px){.axis-x[data-tick="1"],.axis-x[data-tick="2"]{display:none}}
  @media(max-width:480px){.card-content{padding:12px 12px 10px}}
  `;}
 }
 if(!customElements.get('eleven-history-graph-card'))customElements.define('eleven-history-graph-card',HistoryGraphCard);
 window.customCards=window.customCards??[];
-if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))window.customCards.push({type:'eleven-history-graph-card',name:'Eleven History Graph Card',get description(){return language(frontendHass())==='nl'?'Historie van sensoren met dezelfde eenheid':'History of sensors sharing one unit';}});
+if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))window.customCards.push({type:'eleven-history-graph-card',name:'Eleven History Graph Card',get description(){return language(frontendHass())==='nl'?'Sensorhistorie met een eigen y-as per eenheid':'Sensor history with an independent y-axis per unit';}});
 
 })();

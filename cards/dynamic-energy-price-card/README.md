@@ -22,7 +22,7 @@ A compact Home Assistant dashboard card for dynamic electricity tariffs. View th
 
 The graph reveals its lines and fills from left to right when price data first loads into the attached card (650 ms). Initial rendering before dashboard insertion does not consume the animation; updates during the reveal preserve its progress. Routine updates and series toggles do not replay the animation. The device's reduced-motion preference disables it automatically.
 
-Works with hourly or quarter-hour price intervals in the supported sensor format. Import-only is the default; export is optional. The card displays data from your sensors—it does not fetch tariffs or control appliances.
+Works with hourly or quarter-hour price intervals from a price/template sensor, the Tibber Prices `get_price` action, or Zonneplan One's `forecast` sensor attribute. Import-only is the default; export is optional. The card reads your existing Home Assistant integrations; it does not contact an energy provider directly or control appliances.
 
 ## Quick start
 
@@ -41,7 +41,7 @@ Use Home Assistant's visual editor, or start with this YAML:
 
 ```yaml
 type: custom:eleven-dynamic-energy-price-card
-entity: sensor.tibber_prijzen
+entity: sensor.your_price_sensor
 cheapest_hours: 4
 import_selection_mode: contiguous
 show_cheapest_table: true
@@ -49,7 +49,9 @@ show_cheapest_table: true
 
 Replace `entity` with your price sensor. This example highlights the cheapest continuous four-hour block per day and lists it below the chart. Omit the last three settings if you only want the price graph.
 
-**Sensor requirement:** the sensor must provide a `data` attribute with timestamped prices in EUR/kWh. A sensor with only a current-price state is not enough. See **Sensor data** below for the exact format.
+New cards do not preselect an entity. Under **Import → Price source**, choose **Price/template sensor**, **Tibber Prices (get_price)**, or **Zonneplan One (forecast)**. Existing cards keep their configured sensor.
+
+**Default sensor requirement:** a price/template sensor must provide a `data` attribute with timestamped prices in EUR/kWh. A sensor with only a current-price state is not enough. Tibber Prices can be read directly without a template sensor; see **Price sources** below.
 
 ## Examples
 
@@ -87,7 +89,9 @@ import_favorable_color: [140, 100, 230]
 
 Export-period colors can be customized independently with `export_favorable_color`. Leave any color empty to retain its original default.
 
-## Sensor data
+## Price sources
+
+### Price/template sensor (default)
 
 Use an import sensor whose `data` attribute contains an array of intervals. Each interval must include an ISO timestamp with a timezone offset and a price in EUR/kWh:
 
@@ -103,6 +107,35 @@ export price = export entity price + export_price_offset
 ```
 
 Offsets may be negative. The import entity is never used as the base for an export offset.
+
+### Tibber Prices get_price
+
+Install and configure the separate **Tibber Prices** integration (`jpawlowski/hass.tibber_prices`); Home Assistant's built-in Tibber integration alone does not expose this action. Select **Tibber Prices (get_price)** under Import. No `entity` or template sensor is required:
+
+```yaml
+type: custom:eleven-dynamic-energy-price-card
+import_source: tibber_prices
+# Optional with one connection; select explicitly when multiple configurations exist:
+# import_tibber_entry: your_tibber_prices_config_entry_id
+```
+
+The card calls `tibber_prices.get_price` over Home Assistant's authenticated WebSocket with `return_response: true`, sending `start_time` and `end_time` from today's local midnight until the midnight after tomorrow in Home Assistant's configured timezone. Both boundaries are resolved separately so daylight-saving changes are respected. It maps `price_info[].startsAt` and `price_info[].total` into the card's interval format without multiplying the prices; `total` is the full purchase tariff in base currency per kWh. It never reads ApexCharts YAML or falls back to `get_chartdata` or built-in `tibber.get_prices`. Responses are cached for five minutes per connection within a card, refreshed while attached and invalidated on reconnection. Missing actions, permissions, malformed replies and `success: false` show a localized message; a failed refresh does not leave stale tariffs on display. Tomorrow visibility still follows `tomorrow_after`.
+
+Only EUR homes are supported; no currency conversion is performed. This action does not return currency metadata, so the card cannot verify the Tibber home's currency. Verify that your selected connection uses EUR. A known non-EUR Home Assistant currency is rejected as a guard, but an EUR Home Assistant setting is not proof of the connection's currency.
+
+Export can select its own `export_source` and `export_tibber_entry`; this does not turn Tibber's total purchase price into an actual sell tariff. Select a source that genuinely represents your export tariff and apply `export_price_offset` only as an explicit correction to that source.
+
+### Zonneplan One forecast
+
+For the **Zonneplan One** custom integration (`fsaris/home-assistant-zonneplan-one`), select **Zonneplan One (forecast)** and its hourly or quarter-hour electricity tariff sensor:
+
+```yaml
+type: custom:eleven-dynamic-energy-price-card
+import_source: zonneplan
+entity: sensor.your_zonneplan_tariff_sensor
+```
+
+The card reads `attributes.forecast` directly. Current forecast entries use `start_date` and `price_tax_included.amount`; legacy hourly entries use `datetime` and `electricity_price`. Raw amounts are divided by 10,000,000, matching the integration's sensor scaling, to obtain EUR/kWh. Missing/null prices are omitted, not replaced by zero. Sensor IDs are deliberately not assumed. This adapter follows the upstream source contract and has synthetic hourly/quarter-hour tests; it has not been verified against a live Zonneplan installation.
 
 ## Configuration examples
 
@@ -216,8 +249,12 @@ The default title is translated automatically. A title explicitly entered in YAM
 
 | Option | Required | Default | Description |
 |---|---:|---:|---|
-| `entity` | Yes | — | Import sensor containing intervals in `attributes.data`. |
-| `export_entity` | No | — | Export sensor with the same data format. Required when export information is shown. |
+| `import_source` | No | `sensor` | `sensor`, `tibber_prices`, or `zonneplan`. |
+| `entity` | For sensor sources | — | Import price/template sensor with `attributes.data`, or Zonneplan tariff sensor with `attributes.forecast`. No preselected entity. |
+| `import_tibber_entry` | No | — | Tibber Prices config entry; omit only when the integration can resolve a single connection. |
+| `export_source` | No | `sensor` | Independent export source: `sensor`, `tibber_prices`, or `zonneplan`. |
+| `export_entity` | For export sensor sources | — | Dedicated export sensor; required when export information is shown using a sensor source. |
+| `export_tibber_entry` | No | — | Config entry for an explicitly selected Tibber Prices export source. |
 | `export_price_offset` | No | — | Signed EUR/kWh correction applied to the export entity prices. |
 | `graph_mode` | No | `import` | Graph series: `import`, `both`, or `export`. |
 | `current_price_mode` | No | `import` | Current metrics: `import`, `both`, `export`, or `none`. |

@@ -73,7 +73,9 @@ async def main():
   assert await page.locator('.segment').count()==1
   assert await page.locator('.legend span').count()==1
   await page.evaluate('card._showTooltip(card._start)')
-  assert 'Maximaal 20' in await page.locator('.tooltip').inner_text()
+  tooltip_text=await page.locator('.tooltip').inner_text()
+  assert 'Maximaal 20' not in tooltip_text and 'sensor.limit' not in tooltip_text
+  assert 'switch.valid' in tooltip_text
   await page.evaluate('card._zoom(.5)')
   assert await page.locator('.state-limit').count()==1
   await page.screenshot(path=str(OUT/'state-limit-320.png'))

@@ -9,7 +9,7 @@ export function seriesAppearance(config,index,seen=new Set()) {
  const option=config.series_options?.find(s=>s.entity===config.entities[index])??{};
  const inherited=option.gradient_stops??(option.color?[]:config.gradient_stops??[]);
  const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
- const row={entity:config.entities[index],...(option.name?{name:option.name}:{}),
+ const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
   line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
   line_interpolation:option.line_interpolation??config.line_interpolation??'step',
   color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
@@ -28,7 +28,7 @@ export function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 export function editorConfig(config) {
- const data={hours_to_show:24,graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -62,7 +62,7 @@ export function updateSeriesRow(data,index,value){
   delete rows[index].line_style_source;
   for(const key of LINE_GEOMETRY_KEYS)rows[index][key]=old[key];
  }
- if(old.entity!==rows[index].entity)for(const row of rows){
+ if(old.entity&&old.entity!==rows[index].entity)for(const row of rows){
   if(row.line_style_source===old.entity){
    if(rows[index].entity)row.line_style_source=rows[index].entity;
    else delete row.line_style_source;
@@ -94,7 +94,7 @@ export function validateConfig(config) {
  const hours=config.hours_to_show??24;
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -105,10 +105,13 @@ export function validateConfig(config) {
   else if(!Number.isFinite(result[key]))throw new Error(key);
  }
  if(result.y_min!==undefined&&result.y_max!==undefined&&result.y_min>=result.y_max)throw new Error('y_range');
+ if(result.y_step==null||result.y_step==='')delete result.y_step;
+ else if(!Number.isFinite(result.y_step)||result.y_step<=0)throw new Error('y_step');
+ if(result.y_step!==undefined&&result.y_min!==undefined&&result.y_max!==undefined)yAxis([],result);
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
- for(const key of ['show_fill','fill_fade','show_hover_line','show_legend']) if(typeof result[key]!=='boolean') throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
  if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
  const stops=result.gradient_stops??[];
  if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
@@ -116,9 +119,11 @@ export function validateConfig(config) {
  result.gradient_mode=result.gradient_mode??'smooth';
  if(!['smooth','steps'].includes(result.gradient_mode)) throw new Error('gradient_mode');
  result.graph_mode=result.graph_mode??'lines';
+ result.data_source=result.data_source??'auto';
+ if(!['auto','history','statistics'].includes(result.data_source))throw new Error('data_source');
  result.aggregation_period=result.aggregation_period??'none';result.aggregation_method=result.aggregation_method??'avg';
  if(!['none','minute','quarter_hour','hour','day','week','month'].includes(result.aggregation_period))throw new Error('aggregation_period');
- if(!['min','max','avg'].includes(result.aggregation_method))throw new Error('aggregation_method');
+ if(!['min','max','avg','delta'].includes(result.aggregation_method))throw new Error('aggregation_method');
  if(!['lines','stacked'].includes(result.graph_mode))throw new Error('graph_mode');
  const options=result.series_options??[];
  if(!Array.isArray(options)||options.some(s=>!s||!entities.includes(s.entity)||(s.name!=null&&typeof s.name!=='string')||(s.color!=null&&s.color!==''&&!validColor(s.color)))||new Set(options.map(s=>s.entity)).size!==options.length)throw new Error('series_options');
@@ -126,7 +131,7 @@ export function validateConfig(config) {
   if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
   if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
   for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
-  for(const key of ['show_fill','fill_fade'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
   if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
   if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
   if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
@@ -148,6 +153,47 @@ export function gradientColor(stops,value,mode='smooth'){
   color=rgb(b.color);
  }
  return `rgb(${color.join(',')})`;
+}
+// Statistics are hourly or calendar summaries, never exact raw readings or Delta.
+export function statisticsPeriod(config){
+ const source=config.data_source??'auto',period=config.aggregation_period??'none';
+ const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method??'avg')!=='delta';
+ if(source==='statistics'&&!supported)throw new Error('statistics_config');
+ if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48))return null;
+ return period==='none'?'hour':period;
+}
+// HA has used epoch seconds and milliseconds across Recorder versions.
+function statisticTime(value){return typeof value==='number'?(value<1e12?value*1000:value):Date.parse(value);}
+export async function loadHistorySeries(hass,config,start,end){
+ const period=statisticsPeriod(config),strict=config.data_source==='statistics',selected=new Map();
+ if(period){
+  try{
+   const metadata=await hass.callWS({type:'recorder/get_statistics_metadata',statistic_ids:config.entities});
+   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
+   if(strict&&ids.length!==config.entities.length)throw new Error('statistics_unavailable');
+   if(ids.length){
+    const field=config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+    const response=await hass.callWS({type:'recorder/statistics_during_period',statistic_ids:ids,start_time:new Date(start).toISOString(),end_time:new Date(end).toISOString(),period,types:[field]});
+    for(const id of ids){
+     if(!Array.isArray(response[id])){if(strict)throw new Error('statistics_unavailable');continue;}
+     const points=[];
+     // End every bin explicitly: missing bins and unfinished tails stay gaps.
+     for(const row of [...response[id]].sort((a,b)=>statisticTime(a.start)-statisticTime(b.start))){
+      const a=Math.max(start,statisticTime(row.start)),b=Math.min(end,statisticTime(row.end));
+      if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)continue;
+      points.push({t:a,v:typeof row[field]==='number'&&Number.isFinite(row[field])?row[field]:null},{t:b,v:null});
+     }
+     if(points.some(p=>p.v!==null)||strict)selected.set(id,{id,source:'statistics',points:[...new Map(points.map(p=>[p.t,p])).values()].sort((a,b)=>a.t-b.t)});
+    }
+   }
+  }catch(error){if(strict)throw error;selected.clear();}
+ }
+ const missing=config.entities.filter(id=>!selected.has(id));
+ if(missing.length){
+  const response=await hass.callApi('GET',historyUrl({...config,entities:missing},end));
+  for(const s of decodeHistory(response,missing,start,end))selected.set(s.id,s);
+ }
+ return config.entities.map(id=>selected.get(id));
 }
 export function numericState(state) {
  if(typeof state!=='string'||state.trim()==='') return null;
@@ -190,8 +236,43 @@ export function seriesMetadata(hass,entities,options=[]) {
   const option=options.find(s=>s.entity===id);
   return {id,name:option?.name||state.attributes?.friendly_name||id,unit:state.attributes?.unit_of_measurement??''};
  });
- if(items.some(item=>item.unit!==items[0].unit)) throw new Error('unit');
- return {items,unit:items[0].unit};
+ return {items,unit:items[0]?.unit??''};
+}
+// Group by exact unit, never add or scale incompatible quantities together.
+export function graphAxes(series,meta,config,start,end,visible=series.map(()=>true)){
+ const units=[...new Set(meta.items.filter((_,i)=>visible[i]).map(item=>item.unit))];
+ if(!units.length)units.push(meta.items[0]?.unit??'');
+ const seriesAxes=meta.items.map(item=>units.indexOf(item.unit));
+ const plotSeries=config.graph_mode==='stacked'?series.slice():series;
+ const axes=units.map((unit,index)=>{
+  const indices=seriesAxes.flatMap((axis,i)=>axis===index&&visible[i]?[i]:[]);
+  let group=indices.map(i=>series[i]);
+  if(config.graph_mode==='stacked'){
+   group=stackSeries(group,start,end);
+   indices.forEach((i,j)=>{plotSeries[i]=group[j];});
+  }
+  return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
+ });
+ return {axes:alignZeroAxes(axes,config,meta.items[0]?.unit),seriesAxes,plotSeries};
+}
+// Expand only negative axes; never rescale readings or clip the original ranges.
+export function alignZeroAxes(axes,config={},primaryUnit=axes[0]?.unit){
+ if(config.align_zero===false)return axes;
+ const negative=axes.filter(a=>a.min<0);
+ if(negative.length<2)return axes;
+ const primary=negative.find(a=>a.unit===primaryUnit);
+ const fixed=primary&&[config.y_min,config.y_max].some(Number.isFinite);
+ const fraction=a=>-a.min/(a.max-a.min);
+ // Explicit first-unit bounds win, including bounds that exclude zero.
+ if(fixed&&(primary.max<0||(primary.max===0&&negative.some(a=>a.max>0))))return axes;
+ const part=fixed?fraction(primary):negative.reduce((sum,a)=>sum+Math.min(1,fraction(a)),0)/negative.length;
+ return axes.map(a=>{
+  if(a.min>=0||(fixed&&a===primary))return a;
+  const span=Math.max(-a.min/part,part===1?0:Math.max(0,a.max)/(1-part));
+  const min=-span*part,max=part===1?0:span*(1-part);
+  const options={y_min:min,y_max:max,...(a.unit===primaryUnit&&config.y_step!=null?{y_step:config.y_step}:{})};
+  return {unit:a.unit,...yAxis([],options)};
+ });
 }
 export function yRange(series,config={}) {
  let min=Infinity,max=-Infinity;
@@ -206,6 +287,24 @@ export function yRange(series,config={}) {
   else min=max-Math.max(1,Math.abs(max)*0.05);
  }
  return [min,max];
+}
+// Preserve yRange's padding contract; only the displayed axis uses nice steps.
+export function yAxis(series,config={}){
+ if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
+ let [min,max]=yRange(series,config);
+ const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
+ const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
+ const clean=value=>Number(value.toPrecision(15));
+ // Snap only floating-point noise at integral step indices (e.g. 0.3 / 0.1).
+ const index=value=>{const n=value/step,nearest=Math.round(n);return Math.abs(n-nearest)<=Number.EPSILON*Math.max(1,Math.abs(n))*4?nearest:n;};
+ if(!Number.isFinite(config.y_min))min=clean(Math.floor(index(min))*step);
+ if(!Number.isFinite(config.y_max))max=clean(Math.ceil(index(max))*step);
+ const first=Math.ceil(index(min)),last=Math.floor(index(max));
+ const count=Math.max(0,last-first+1);
+ if(!Number.isFinite(count)||count>200||!Number.isFinite(min)||!Number.isFinite(max)||!Number.isFinite(max-min)||!(max>min))throw new Error('y_step_count');
+ const ticks=Array.from({length:count},(_,i)=>clean((first+i)*step));
+ if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
+ return {min,max,step,ticks};
 }
 const zoneFormats=new Map();
 function localParts(t,zone){
@@ -233,10 +332,18 @@ export function periodBounds(t,period,zone='UTC'){
 export function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
  if(period==='none')return series;
  const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
- return series.map(s=>{const points=[];let index=0;
+ return series.map(s=>{if(s.source==='statistics')return s;const points=[];let index=0;
   for(const [a,b] of bounds){let cursor=a,total=0,duration=0,min=Infinity,max=-Infinity;
    while(index<s.points.length&&s.points[index].t<=a)index++;
-   let value=index?s.points[index-1].v:null;const fragments=[{t:a,valid:value!==null}];
+   let value=index?s.points[index-1].v:null;
+   if(method==='delta'){
+    const first=value;let valid=Number.isFinite(first);
+    // Recorder holds each reading until the next one. Include an exact end
+    // boundary once as this bin's end and the following bin's start.
+    while(index<s.points.length&&s.points[index].t<=b){value=s.points[index++].v;valid&&=Number.isFinite(value);}
+    points.push({t:a,v:valid?value-first:null});continue;
+   }
+   const fragments=[{t:a,valid:value!==null}];
    while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
    const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
    for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});

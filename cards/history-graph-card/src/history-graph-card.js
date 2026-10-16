@@ -1,14 +1,16 @@
-import {validateConfig,historyUrl,decodeHistory,seriesMetadata,yRange,valueAt,stepPath,gradientColor,stackSeries,aggregateSeries,displayPoints,editorConfig,cardConfig,seriesAppearance,updateSeriesRow,removeSeriesRow,lineStyleSources} from './history-utils.js';
+import {validateConfig,loadHistorySeries,historyUrl,decodeHistory,seriesMetadata,graphAxes,valueAt,stepPath,gradientColor,aggregateSeries,displayPoints,editorConfig,cardConfig,seriesAppearance,updateSeriesRow,removeSeriesRow,lineStyleSources} from './history-utils.js';
 import {language,text,number,time,escapeHtml,frontendHass} from './localization.js';
 import {ELF_FLIGHT_MS,elevenDay,isElevenMinute,elevenMarkup,elevenStyles} from './eleven.js';
 import {registerElfPreview,unregisterElfPreview} from './library.js';
 import {SharedGraph,graphLineStyle,graphStyles} from '../../../shared/graph.js';
+import {cardHeader,cardHeaderStyles} from '../../../shared/card-header.js';
 const COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
 const REFRESH_MS=60000;
 // Native controls, with one independently owned appearance form per sensor.
 export class HistoryGraphEditor extends HTMLElement {
  constructor(){super();this.attachShadow({mode:'open'});}
- setConfig(config){this._data=editorConfig(config);this._render();}
+ _editorConfig(config){return editorConfig(config);}
+ setConfig(config){this._data=this._editorConfig(config);this._render();}
  set hass(hass){this._hass=hass;this._render();}
  get hass(){return this._hass;}
  connectedCallback(){this._render();}
@@ -32,7 +34,7 @@ export class HistoryGraphEditor extends HTMLElement {
     this._data={...this._data,entities:[...this._data.entities,row]};this._openNew=true;this._render();
    };
   }
-  this._bind(this._form,HistoryGraphCard.getConfigForm(),this._data);
+  this._bind(this._form,(this.constructor.cardClass??HistoryGraphCard).getConfigForm(),this._data);
   const lang=language(this._hass),label=key=>text(key,lang),container=this.shadowRoot.querySelector('.sensors');
   this.shadowRoot.querySelector('.sensors-heading').textContent=label('entities');
   this.shadowRoot.querySelector('.empty').textContent=this._data.entities.length?'':label('add_sensorHelper');
@@ -62,7 +64,7 @@ export class HistoryGraphEditor extends HTMLElement {
    const cssColor=c=>Array.isArray(c)?`rgb(${c.join(',')})`:c;
    entry.querySelector('.swatch').style.background=row.color_mode==='gradient'&&row.gradient_stops.length?`linear-gradient(to right,${row.gradient_stops.map(s=>cssColor(s.color)).join(',')})`:cssColor(row.color);
    for(const key of ['up','down','remove']){const button=entry.querySelector('.'+key);button.textContent=label('sensor_'+key);button.setAttribute('aria-label',`${label('sensor_'+key)}: ${name}`);button.disabled=key==='up'?index===0:key==='down'?index===this._data.entities.length-1:false;}
-   this._bind(entry.querySelector('ha-form'),HistoryGraphCard.getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
+   this._bind(entry.querySelector('ha-form'),(this.constructor.cardClass??HistoryGraphCard).getSeriesConfigForm(row,this._data.entities),{...row,line_style_source:row.line_style_source??''});
   });
   this._openNew=false;
  }
@@ -86,17 +88,23 @@ export class HistoryGraphCard extends HTMLElement {
   const select=keys=>({select:{mode:'dropdown',get options(){return keys.map(value=>({value,label:label(value)}));}}});
   return this._formContract([
    {name:'title',selector:{text:{}}},
+   {name:'show_title',default:true,selector:{boolean:{}}},
    {name:'hours_to_show',selector:{number:{min:1,max:8760,step:0.5,mode:'box'}}},
    {type:'expandable',name:'graph_settings',get title(){return label('graph_settings');},flatten:true,schema:[
     {name:'graph_mode',default:'lines',selector:select(['lines','stacked'])},
     {name:'show_legend',default:true,selector:{boolean:{}}},
     {name:'show_hover_line',default:true,selector:{boolean:{}}},
     {name:'sync_hover',default:true,selector:{boolean:{}}},
-    {name:'hover_sync_group',selector:{text:{}}},
+    {name:'hover_sync_group',selector:{text:{}}}
+   ]},
+   {type:'expandable',name:'y_axis',get title(){return label('y_axis');},flatten:true,schema:[
     {name:'y_min',selector:{number:{step:'any',mode:'box'}}},
-    {name:'y_max',selector:{number:{step:'any',mode:'box'}}}
+    {name:'y_max',selector:{number:{step:'any',mode:'box'}}},
+    {name:'y_step',selector:{number:{step:'any',mode:'box'}}},
+    {name:'align_zero',default:true,selector:{boolean:{}}}
    ]},
    {type:'expandable',name:'data_processing',get title(){return label('data_processing');},flatten:true,schema:[
+    {name:'data_source',default:'auto',selector:select(['auto','history','statistics'])},
     {name:'aggregation_period',default:'none',selector:select(['none','minute','quarter_hour','hour','day','week','month'])},
     {name:'aggregation_method',default:'avg',selector:select(['min','max','avg'])}
    ]}
@@ -111,6 +119,7 @@ export class HistoryGraphCard extends HTMLElement {
   return this._formContract([
    {name:'entity',required:true,selector:{entity:{domain:'sensor'}}},
    {name:'name',selector:{text:{}}},
+   {name:'visible',default:true,selector:{boolean:{}}},
    {type:'expandable',name:'series_line',get title(){return label('series_line');},flatten:true,expanded:true,schema:[
     ...(rows.filter(s=>s.entity).length>1?[{name:'line_style_source',selector:sourceSelector}]:[]),
     ...(!row.line_style_source?[
@@ -148,7 +157,9 @@ export class HistoryGraphCard extends HTMLElement {
  _gradient(min,max,y){
   const c=this._config;
   const gradients=c.entities.map((_,index)=>{
+   if(!this._isSeriesVisible(index))return '';
    const {stops,mode}=this._seriesAppearance(index);if(!stops.length)return '';
+   if(this._axes){({min,max}=this._axes[this._seriesAxes[index]]);y=v=>(max-v)/(max-min)*300;}
    const values=[max,...stops.map(s=>s.value).filter(v=>v>min&&v<max).reverse(),min];
    const markup=values.map((v,i)=>{const offset=y(v)/3;const high=gradientColor(stops,v,mode);const low=mode==='steps'&&i>0&&i<values.length-1?gradientColor(stops,v-Math.max(1,Math.abs(v))*Number.EPSILON*4,mode):high;return `<stop offset="${offset}%" stop-color="${high}"/>${low!==high?`<stop offset="${offset}%" stop-color="${low}"/>`:''}`;}).join('');
    return `<linearGradient id="history-colors-${index}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="300">${markup}</linearGradient>`;
@@ -173,7 +184,16 @@ export class HistoryGraphCard extends HTMLElement {
  static getStubConfig(hass){const ids=Object.keys(hass?.states??{}).filter(id=>id.startsWith('sensor.')&&Number.isFinite(Number(hass.states[id].state))&&hass.states[id].state!=='');return {entities:ids.slice(0,1),hours_to_show:24};}
  getGridOptions(){return {rows:6,columns:12,min_rows:4,min_columns:6};}
  getCardSize(){return 6;}
- setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
+ _isSeriesVisible(index){const id=this._config.entities[index];return this._visibility?.get(id)??(this._config.series_options.find(s=>s.entity===id)?.visible??true);}
+ _toggleSeries(id){
+  const index=this._config.entities.indexOf(id);if(index<0)return;
+  this._visibility??=new Map();this._visibility.set(id,!this._isSeriesVisible(index));this._hideTooltip();this._render();
+  queueMicrotask(()=>this.shadowRoot.querySelector?.(`button[data-series="${id}"]`)?.focus({preventScroll:true}));
+ }
+ setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message==='y_step'?'y_step_error':error.message==='y_step_count'?'y_step_count':error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}
+  const previous=this._config,visibility=this._visibility;
+  this._visibility=new Map(validated.entities.map(id=>{const initial=validated.series_options.find(s=>s.entity===id)?.visible??true,old=previous?.series_options.find(s=>s.entity===id)?.visible??true;return [id,initial===old&&visibility?.has(id)?visibility.get(id):initial];}));
+  SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(hass){this._hass=hass;if(!this._config)return;let signature;try{const meta=seriesMetadata(hass,this._config.entities);signature=JSON.stringify([meta,language(hass),hass.config?.time_zone]);}catch(e){signature=e.message;}
   if(signature!==this._signature){this._signature=signature;this._render();}
   if(this._connected&&!this._started)this._refresh();
@@ -198,49 +218,61 @@ export class HistoryGraphCard extends HTMLElement {
   this._status='loading';this._render();let timeout;
   try{
    seriesMetadata(hass,config.entities);
-   const response=await Promise.race([hass.callApi('GET',historyUrl(config,end)),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
+   const response=await Promise.race([loadHistorySeries(hass,config,start,end),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('timeout')),15000);timeout.unref?.();})]);
    if(generation!==this._generation||!this._connected)return;
    seriesMetadata(this._hass,config.entities);
-   this._series=decodeHistory(response,config.entities,start,end);this._rawSeries=this._series;this._start=start;this._end=end;
+   this._series=response;this._rawSeries=this._series;this._start=start;this._end=end;
    this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';
-  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit'].includes(e.message)?e.message:'error';this._series=[];}
+  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
   finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),REFRESH_MS);this._timer.unref?.();}}
  }
+ _getGraphAxes(series,meta,visible){return graphAxes(series,meta,this._config,this._start,this._end,visible);}
  _render(){
   if(!this._config)return;const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
   let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
   const title=this._config.title??text('title',lang);let content='';
-  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
+  if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
   else{
    this._rawSeries??=this._series;
    const key=JSON.stringify([this._start,this._end,this._zone,this._config.aggregation_period,this._config.aggregation_method]);
    if(this._processedRaw!==this._rawSeries||this._processedKey!==key){this._series=aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);this._processedRaw=this._rawSeries;this._processedKey=key;}
-   if(this._plotSource!==this._series||this._plotMode!==this._config.graph_mode){this._plotSeries=this._config.graph_mode==='stacked'?stackSeries(this._series,this._start,this._end):this._series;this._plotSource=this._series;this._plotMode=this._config.graph_mode;}
-   this._meta=meta;const [min,max]=yRange(this._plotSeries,this._config);this._range=[min,max];
+   const visible=this._config.entities.map((_,i)=>this._isSeriesVisible(i)),anyVisible=visible.some(Boolean);
+   const axisKey=JSON.stringify([meta.items.map(item=>item.unit),this._config.graph_mode,this._config.y_min,this._config.y_max,this._config.y_step,this._config.align_zero,visible]);
+   let grouped;try{if(this._axisSource!==this._series||this._axisKey!==axisKey){this._axisGroups=this._getGraphAxes(this._series,meta,visible);this._axisSource=this._series;this._axisKey=axisKey;}grouped=this._axisGroups;}catch(error){if(!['y_step','y_step_count'].includes(error.message))throw error;this._status=error.message==='y_step'?'y_step_error':error.message;this._range=null;this._render();return;}
+   this._meta=meta;this._axes=grouped.axes;this._seriesAxes=grouped.seriesAxes;this._plotSeries=grouped.plotSeries;
+   const {min,max}=this._axes[0];this._range=[min,max];
+   const extra=this._axes.length-1,mixed=new Set(meta.items.map(item=>item.unit)).size>1;
    this._viewStart=Math.max(this._start,this._viewport?.[0]??this._start);this._viewEnd=Math.min(this._end,this._viewport?.[1]??this._end);
    if(this._viewEnd<=this._viewStart){this._viewport=null;this._viewStart=this._start;this._viewEnd=this._end;}
    const x=t=>(t-this._viewStart)/(this._viewEnd-this._viewStart)*1000,y=v=>(max-v)/(max-min)*300;
-   const axes=Array.from({length:5},(_,i)=>{const ratio=i/4;return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px)">${escapeHtml(number(max-(max-min)*ratio,lang))}</span>`;}).join('');
-   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" style="left:calc(${i/3*100}% + ${44-i/3*56}px)">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
+   const axes=this._axes.map((axis,index)=>{
+    const position=index?`left:auto;right:calc(12px + ${index-1} * var(--axis-column));width:var(--axis-column);max-width:var(--axis-column);text-align:right;`:'';
+    const unit=mixed?`<span class="axis-unit" style="${position}">${escapeHtml(axis.unit||'—')}</span>`:'';
+    return unit+[...axis.ticks].reverse().map(value=>{const ratio=(axis.max-value)/(axis.max-axis.min);return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px);${position}">${escapeHtml(number(value,lang,true))}</span>`;}).join('');
+   }).join('');
+   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
 
    const display=this._plotSeries.map(s=>({...s,points:displayPoints(s.points,this._viewStart,this._viewEnd)}));
+   const seriesY=i=>{const a=this._axes[this._seriesAxes[i]];return v=>(a.max-v)/(a.max-a.min)*300;};
    this._graph??=new SharedGraph();
    const graph=this._graph.render(this,{
     viewBox:'0 0 1000 300',defs:this._gradient(min,max,y),
-    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,y,i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
-    lines:display.map((s,i)=>({d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,y,i),className:'series-line',entity:s.id,appearance:this._appearance(i)})),
+    fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!visible[i]||!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,seriesY(i),i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
+    lines:display.flatMap((s,i)=>visible[i]?[{d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,seriesY(i),i),className:'series-line',entity:s.id,appearance:this._appearance(i)}]:[]),
    });
-   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<span class="legend-item"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}</strong></span>`;}).join('');
-   const missing=meta.items.filter((_,i)=>!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
-   content=`${this._config.show_legend?`<div class="legend">${legend}<span class="unit">${escapeHtml(meta.unit)}</span></div>`:`<div class="data-status">${escapeHtml(meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" tabindex="0" role="group" aria-label="${text('chart',lang)}">${axes}${times}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
+   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
+   const missing=meta.items.filter((_,i)=>visible[i]&&!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
+   content=`${this._config.show_legend?`<div class="legend">${legend}${mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`}</div>`:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
   }
-  const controls=this._status==='ready'?`<div class="zoom-controls" role="group" aria-label="${text('zoom',lang)}">${[['in','+'],['out','−'],['reset','↺']].map(([action,label])=>`<button data-zoom="${action}" title="${text('zoom_'+action,lang)}" aria-label="${text('zoom_'+action,lang)}">${label}</button>`).join('')}</div>`:'';
-  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${title?`<header><h2>${escapeHtml(title)}</h2></header>`:''}${controls}${content}</div></ha-card>`;
+  const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang});
+  this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${controls}${content}</div></ha-card>`;
+  this.shadowRoot.querySelectorAll?.('[data-series]').forEach(button=>button.onclick=()=>this._toggleSeries(button.dataset.series));
   this.shadowRoot.querySelectorAll?.('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:0.5,out:2,reset:0}[button.dataset.zoom]));
   this._graph?.restore(this);
   const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this._pinned=false;this._bindInteractions();
   this._syncElf();SharedGraph.restoreHover(this);
  }
+ _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-this._config.hours_to_show*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
  _zoom(factor){
   this._hideTooltip();if(!factor)this._viewport=null;
   else{const a=this._viewStart??this._start,b=this._viewEnd??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2;
@@ -260,7 +292,7 @@ export class HistoryGraphCard extends HTMLElement {
    if(e.key==='Escape'){this._hideTooltip();return;}
    if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();
    const a=this._viewStart??this._start,b=this._viewEnd??this._end;
-   const timeline=[...new Set([a,...this._series.flatMap(s=>s.points.map(p=>p.t)).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
+   const timeline=[...new Set([a,...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t):[]).filter(t=>t>a&&t<b),b])].sort((a,b)=>a-b);
    let index=timeline.findIndex(t=>t>=(this._cursor??this._start));if(index<0)index=timeline.length-1;
    if(e.key==='Home')index=0;else if(e.key==='End')index=timeline.length-1;else index=Math.max(0,Math.min(timeline.length-1,index+(e.key==='ArrowRight'?1:-1)));
    this._pinned=true;this._showTooltip(timeline[index]);
@@ -269,12 +301,15 @@ export class HistoryGraphCard extends HTMLElement {
  _receiveHover(timestamp){if(timestamp===null||timestamp<(this._viewStart??this._start)||timestamp>(this._viewEnd??this._end)){this._hideTooltip(false);return;}this._showTooltip(timestamp,false);}
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._cursor=null;this._pinned=false;const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;const tooltip=chart.querySelector('.tooltip');if(tooltip)tooltip.hidden=true;const markers=chart.querySelector('.markers');if(markers)markers.innerHTML='';const guide=chart.querySelector('.guide');if(guide)guide.hidden=true;}
  _showTooltip(timestamp,publish=true){
+  if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;this._cursor=timestamp;
   const tooltip=chart.querySelector('.tooltip'),plot=chart.querySelector('.plot');const box=chart.getBoundingClientRect(),p=plot.getBoundingClientRect();
   const px=p.left-box.left+(timestamp-(this._viewStart??this._start))/((this._viewEnd??this._end)-(this._viewStart??this._start))*p.width;
-  const [min,max]=this._range;const positions=[];
-  const rows=this._series.map((s,i)=>{const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return `${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.unit}`}`;});
-  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map(row=>`<span>${escapeHtml(row)}</span>`).join('')}`;tooltip.hidden=false;
+  const positions=[];
+  const rows=this._series.flatMap((s,i)=>{if(!this._isSeriesVisible(i))return [];const {min,max}=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return [`${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.items[i].unit??this._meta.unit}`}`];});
+  if(!rows.length){this._hideTooltip(publish);return;}
+  const colors=this._series.flatMap((s,i)=>this._isSeriesVisible(i)?[this._appearance(i,valueAt(s.points,timestamp)).color]:[]);
+  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map((row,i)=>`<span><i style="background:${escapeHtml(colors[i])}"></i><b>${escapeHtml(row)}</b></span>`).join('')}`;tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';
   tooltip.style.maxHeight=`${Math.max(0,box.height-8)}px`;
   const measured=tooltip.getBoundingClientRect();let left=Math.max(4,Math.min(box.width-measured.width-4,px+14));
   if(px+14+measured.width>box.width-4)left=Math.max(4,px-measured.width-14);
@@ -287,29 +322,30 @@ export class HistoryGraphCard extends HTMLElement {
   if(publish)SharedGraph.publishHover(this,timestamp);
  }
  _styles(){return `
- :host{display:block;height:100%;min-width:0;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
+ :host{display:block;height:100%;min-width:0;container-type:inline-size;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
  ha-card{height:100%;display:flex;flex-direction:column;background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,inherit)}
  .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;padding:16px 16px 12px;line-height:1.4}
- h2{margin:0;font-size:var(--font-size-title);line-height:1.25;font-weight:650;letter-spacing:-.01em}
- header{padding-right:106px}.zoom-controls{position:absolute;right:12px;top:10px;display:flex;gap:2px}.zoom-controls button{width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color);font:20px inherit;cursor:pointer}.zoom-controls button:hover,.zoom-controls button:focus-visible{background:var(--secondary-background-color);outline:1px solid var(--divider-color)}
- .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:12px 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
- .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+ ${cardHeaderStyles()}
+ .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:0 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
+ .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;border:0;padding:4px 0;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer;border-radius:4px}.legend-item[aria-pressed="false"]{opacity:.45}.legend-item[aria-pressed="false"]>span{text-decoration:line-through}.legend-item:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}.empty-visibility{position:absolute;inset:22px 12px 30px 44px;display:flex;align-items:center;justify-content:center;color:var(--secondary-text-color);font-size:12px;text-align:center;pointer-events:none}
  .legend i{width:15px;flex-shrink:0;border-top:3px solid var(--series-color)}.unit{margin-left:auto;font-weight:600}
  .data-status{font-size:11px;color:var(--secondary-text-color);margin-top:3px}
  .chart{position:relative;flex:1;min-height:120px;height:260px;margin-top:4px;outline:none;touch-action:pan-y}
  .chart:focus-visible{box-shadow:inset 0 0 0 2px var(--primary-color);border-radius:8px}
- .plot{position:absolute;left:44px;right:12px;top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
+ .plot{position:absolute;left:44px;right:calc(12px + var(--axes-right,0px));top:22px;bottom:30px;overflow:hidden}.plot svg{width:100%;height:100%;overflow:hidden}
  .axis-y,.axis-x{position:absolute;color:var(--secondary-text-color);font-size:11px;line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}.axis-y{left:0;transform:translateY(-50%);max-width:40px;overflow:hidden;text-overflow:ellipsis}.axis-x{bottom:4px;transform:translateX(-50%)}.axis-x:last-of-type{transform:translateX(-100%)}
- .tooltip{overflow-y:auto;position:absolute;z-index:3;padding:9px 11px;border:1px solid var(--divider-color);border-radius:8px;background:var(--card-background-color);box-shadow:0 5px 16px #0003;pointer-events:auto;font-size:12px;font-variant-numeric:tabular-nums;box-sizing:border-box;max-width:calc(100% - 8px)}.tooltip strong,.tooltip span{display:block}.tooltip span{overflow-wrap:anywhere}.tooltip strong{margin-bottom:4px}.tooltip[hidden]{display:none}
+ .axis-unit{position:absolute;left:0;top:2px;max-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color);font-size:10px;font-weight:600}
+ ${SharedGraph.tooltipStyles()}
  .state{display:flex;flex:1;height:260px;flex-direction:column;justify-content:center;align-items:flex-start;gap:8px;min-height:120px;font-size:14px;color:var(--secondary-text-color)}.retry{font:inherit;border:1px solid var(--divider-color);border-radius:6px;background:var(--secondary-background-color);color:var(--primary-text-color);min-height:44px;padding:0 12px;cursor:pointer}
  .guide{position:absolute;top:22px;bottom:30px;border-left:1px dashed var(--secondary-text-color);pointer-events:none}.guide[hidden]{display:none}
  .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none}.zoom-selection[hidden]{display:none}
  .sr-only{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
  ${elevenStyles()}
  ${graphStyles()}
+ @container(max-width:480px){.axis-x[data-tick="1"],.axis-x[data-tick="2"]{display:none}}
  @media(max-width:480px){.card-content{padding:12px 12px 10px}}
  `;}
 }
 if(!customElements.get('eleven-history-graph-card'))customElements.define('eleven-history-graph-card',HistoryGraphCard);
 window.customCards=window.customCards??[];
-if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))window.customCards.push({type:'eleven-history-graph-card',name:'Eleven History Graph Card',get description(){return language(frontendHass())==='nl'?'Historie van sensoren met dezelfde eenheid':'History of sensors sharing one unit';}});
+if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))window.customCards.push({type:'eleven-history-graph-card',name:'Eleven History Graph Card',get description(){return language(frontendHass())==='nl'?'Sensorhistorie met een eigen y-as per eenheid':'Sensor history with an independent y-axis per unit';}});

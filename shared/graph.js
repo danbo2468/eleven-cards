@@ -20,6 +20,36 @@ export class SharedGraph {
       if (source !== host && host.isConnected && group === this.hoverGroup(host)) receive(timestamp);
     };
     window.addEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    // Scroll does not cross shadow roots: listen in every enclosing tree.
+    host._sharedScrollTargets = [window];
+    for (let root = host.getRootNode?.(); root && root !== window; root = root.host?.getRootNode()) {
+      host._sharedScrollTargets.push(root);
+    }
+    host._sharedScrollListener = event => {
+      if (event?.composedPath?.().some(node => node?.classList?.contains('tooltip'))) return;
+      host._hideTooltip();
+    };
+    for (const target of host._sharedScrollTargets) target.addEventListener('scroll', host._sharedScrollListener, true);
+    window.addEventListener('resize', host._sharedScrollListener);
+  }
+  static tooltipInView(host) {
+    const chart = host.shadowRoot?.querySelector('.chart');
+    const box = chart?.getBoundingClientRect?.();
+    if (!box) return true;
+    const bottom = box.bottom ?? box.top + box.height, right = box.right ?? box.left + box.width;
+    if (bottom <= 0 || right <= 0 || box.top >= (window.innerHeight ?? Infinity) || box.left >= (window.innerWidth ?? Infinity)) return false;
+    // Respect nested scrolling/clipping containers, including HA's shadow trees.
+    for (let node = host; node; node = node.parentElement ?? node.getRootNode?.().host) {
+      if (!node.getBoundingClientRect || !globalThis.getComputedStyle) continue;
+      const style = getComputedStyle(node), clipX = /auto|scroll|hidden|clip/.test(style.overflowX), clipY = /auto|scroll|hidden|clip/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const bounds = node.getBoundingClientRect();
+      if ((clipY && (bottom <= bounds.top || box.top >= bounds.bottom)) || (clipX && (right <= bounds.left || box.left >= bounds.right))) return false;
+    }
+    return true;
+  }
+  static tooltipStyles() {
+    return `.tooltip{position:absolute;z-index:4;box-sizing:border-box;min-width:0;max-width:calc(100% - 8px);padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:6px;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow:auto;overflow-wrap:anywhere;pointer-events:none}.tooltip[hidden]{display:none}.tooltip strong{display:block;margin-bottom:4px;white-space:normal}.tooltip span{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:6px;margin-top:5px;white-space:normal}.tooltip i{display:block;width:9px;height:9px;margin:4px 0 0;border:0;border-radius:3px;flex-shrink:0;background:var(--series-color)}.tooltip b{font-weight:600;min-width:0;overflow-wrap:anywhere}.tooltip small{display:block;grid-column:2;color:var(--secondary-text-color,#666);font-size:10px;white-space:normal;font-variant-numeric:tabular-nums}`;
   }
   static publishHover(host, timestamp) {
     const group = this.hoverGroup(host);
@@ -46,6 +76,10 @@ export class SharedGraph {
   static disconnectHover(host) {
     this.clearHover(host);
     if (host._sharedHoverListener) globalThis.window?.removeEventListener('eleven-cards:hover-sync', host._sharedHoverListener);
+    for (const target of host._sharedScrollTargets ?? []) target.removeEventListener('scroll', host._sharedScrollListener, true);
+    globalThis.window?.removeEventListener('resize', host._sharedScrollListener);
+    host._sharedScrollTargets = [];
+    host._sharedScrollListener = null;
     host._sharedHoverListener = null;
     host._receiveSharedHover = null;
   }

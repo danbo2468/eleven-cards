@@ -220,6 +220,44 @@ export function createPriceTicks(minimum, maximum, count = 5) {
   return Array.from({ length: size }, (_, index) => Number((Number(maximum) - step * index).toFixed(10)));
 }
 
+// get_price returns unscaled base-currency totals, not chartdata metadata.
+export function tibberPriceData(response) {
+  if(response?.success===false)throw Error('unavailable');
+  if(!Array.isArray(response?.price_info))throw Error('format');
+  return response.price_info.flatMap(row=>{
+    if(typeof row?.total!=='number' || !Number.isFinite(row.total) || typeof row.startsAt!=='string' || !Number.isFinite(Date.parse(row.startsAt)))return [];
+    return [{start_time:row.startsAt,price_per_kwh:row.total}];
+  });
+}
+
+export function tibberPriceRange(now, timeZone) {
+  const day=localDayKey(now,timeZone);
+  const midnight=key=>{
+    const target=Date.parse(`${key}T00:00:00Z`);
+    let instant=target;
+    // Resolve each midnight independently: a two-day range can span 47/49 hours.
+    for(let i=0;i<4;i++) {
+      const p=zonedParts(instant,timeZone);
+      const local=Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00Z`);
+      if(local===target)return new Date(instant).toISOString();
+      instant+=target-local;
+    }
+    throw Error('timezone');
+  };
+  return {start_time:midnight(day),end_time:midnight(addDaysToKey(day,2))};
+}
+
+// Zonneplan One exposes raw fixed-point amounts in forecast, not its scaled sensor state.
+export function zonneplanPriceData(forecast) {
+  if(!Array.isArray(forecast))return [];
+  return forecast.flatMap(row=>{
+    const start_time=row?.start_date ?? row?.datetime;
+    const amount=row?.price_tax_included?.amount ?? row?.electricity_price;
+    if(typeof amount!=='number' || !Number.isFinite(amount) || !Number.isFinite(Date.parse(start_time)))return [];
+    return [{start_time,price_per_kwh:amount/10000000}];
+  });
+}
+
 export function normalizePoints(data, timeZone) {
   if (!Array.isArray(data)) return [];
   return data

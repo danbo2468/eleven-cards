@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eleven Overview beta — synthetic QA</title>
+<style>body{margin:0;padding:24px;background:#f4f5f6;color:#20252b;font:14px system-ui;--card-background-color:#fff;--primary-text-color:#20252b;--secondary-text-color:#626970;--divider-color:#ddd}body.dark{background:#111418;color:#e5e7eb;--card-background-color:#20252b;--primary-text-color:#e5e7eb;--secondary-text-color:#b0b6be;--divider-color:#3a4149}main{max-width:600px;margin:auto}p{color:var(--secondary-text-color)}ha-card{border:1px solid var(--divider-color);border-radius:12px;overflow:hidden}@media(max-width:400px){body{padding:12px}}</style>
+<main><p>Synthetic QA fixture · not live household data</p><eleven-overview-card></eleven-overview-card></main>
+<script src="../dist/eleven-overview-card.js"></script><script>
+const ids=['sensor.power','sensor.temperature','sensor.price','sensor.humidity'];const units=['W','°C','EUR/kWh','%'],values=[418,20.8,-0.04,54],names=['Stroomverbruik','Woonkamer','Stroomprijs','Luchtvochtigheid'];
+window.qaStates=Object.fromEntries(ids.map((id,i)=>[id,{entity_id:id,state:String(values[i]),attributes:{friendly_name:names[i],unit_of_measurement:units[i]}}]));
+window.qaRows=ids.map((id,i)=>Array.from({length:49},(_,n)=>({entity_id:id,last_changed:new Date(Date.now()-86400000+n*1800000).toISOString(),state:i===2&&n>15&&n<22?'unavailable':String(values[i]+Math.sin(n*.3)*(i===0?160:i===1?1.4:i===2?.1:5)),attributes:qaStates[id].attributes})));
+window.card=document.querySelector('eleven-overview-card');window.qaHass={language:'nl',locale:{language:'nl'},states:qaStates,callApi:async()=>qaRows};card.setConfig({entities:ids});card.hass=qaHass;
+</script>
