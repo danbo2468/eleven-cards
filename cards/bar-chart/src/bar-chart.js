@@ -1,5 +1,5 @@
 import {HistoryGraphCard,HistoryGraphEditor} from '../../history-graph-card/src/history-graph-card.js';
-import {editorConfig,graphAxes,yAxis} from '../../history-graph-card/src/history-utils.js';
+import {editorConfig,graphAxes,yAxis,periodBounds,valueAt} from '../../history-graph-card/src/history-utils.js';
 import {language,frontendHass} from '../../history-graph-card/src/localization.js';
 import {SharedGraph} from '../../../shared/graph.js';
 
@@ -84,6 +84,44 @@ export class BarChartCard extends HistoryGraphCard {
    path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
   }
   return path.trim();
+ }
+ _hoverInterval(timestamp){
+  const a=this._viewStart??this._start,b=this._viewEnd??this._end;
+  const t=Math.max(a,Math.min(b-1,timestamp)),period=this._config.aggregation_period;
+  const bounds=period==='none'?[this._start,this._end]:periodBounds(t,period,this._zone);
+  // Fragment boundaries are real bar edges, including unavailable intervals.
+  const edges=[Math.max(a,bounds[0]),Math.min(b,bounds[1]),...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t).filter(x=>x>a&&x<b&&x>bounds[0]&&x<bounds[1]):[])].sort((x,y)=>x-y);
+  const end=edges.find(x=>x>t)??b,start=edges.filter(x=>x<=t).at(-1)??a;
+  return {start,end,labelTime:period==='none'?start:bounds[0]};
+ }
+ _barTime(timestamp){
+  const period=this._config.aggregation_period,options={timeZone:this._zone,year:'numeric',month:period==='month'?'long':'short'};
+  if(period!=='month')options.day='numeric';
+  if(!['day','week','month'].includes(period))Object.assign(options,{hour:'2-digit',minute:'2-digit',...(period==='none'?{second:'2-digit'}:{})});
+  return new Intl.DateTimeFormat(this._lang||'en',options).format(timestamp);
+ }
+ _showTooltip(timestamp,publish=true){
+  const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
+  const interval=this._hoverInterval(timestamp);
+  // Keep History's value/gap handling, escaping and accessible rows, but never
+  // publish its unsnapped timestamp or leave its measurement-time guide visible.
+  super._showTooltip(interval.start,false);
+  const tooltip=chart.querySelector('.tooltip');if(tooltip.hidden)return;
+  const heading=tooltip.querySelector('strong'),oldTitle=heading.textContent,title=this._barTime(interval.labelTime);heading.textContent=title;
+  const sr=chart.querySelector('.sr-only');sr.textContent=title+sr.textContent.slice(oldTitle.length);
+  const box=chart.getBoundingClientRect(),plot=chart.querySelector('.plot').getBoundingClientRect();
+  const x=t=>plot.left-box.left+(t-this._viewStart)/(this._viewEnd-this._viewStart)*plot.width;
+  const left=x(interval.start),span=x(interval.end)-left,visible=this._series.map((_,i)=>i).filter(i=>this._isSeriesVisible(i));
+  const grouped=this._config.graph_mode!=='stacked',count=grouped?visible.length:1;
+  const px=left+span*(.5-.038/count),guide=chart.querySelector('.guide');if(guide)guide.style.left=`${px}px`;
+  let dot=0;const markers=chart.querySelectorAll('.hover-dot');
+  for(const i of visible){
+   const height=valueAt((this._plotSeries??this._series)[i].points,interval.start),axis=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};
+   if(height!==null&&height>=axis.min&&height<=axis.max){const slot=grouped?visible.indexOf(i):0;markers[dot++].style.left=`${left+span*(.12+(slot+.45)*.76/count)}px`;}
+  }
+  const measured=tooltip.getBoundingClientRect();
+  tooltip.style.left=`${Math.max(4,Math.min(box.width-measured.width-4,px+14+measured.width>box.width-4?px-measured.width-14:px+14))}px`;
+  if(publish)SharedGraph.publishHover(this,(interval.start+interval.end)/2);
  }
  _render(){
   if(this._config&&this._config.title===undefined){
