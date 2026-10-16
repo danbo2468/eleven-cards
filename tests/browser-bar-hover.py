@@ -1,7 +1,7 @@
 import asyncio,json,pathlib,os
 from playwright.async_api import async_playwright
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-OUT=ROOT/'qa-evidence/bar-hover';OUT.mkdir(exist_ok=True)
+OUT=ROOT/'qa-evidence/bar-hover';OUT.mkdir(parents=True,exist_ok=True)
 BUNDLE=pathlib.Path(os.environ.get('BAR_BUNDLE',ROOT/'cards/bar-chart/dist/eleven-bar-chart.js'))
 EXE='/opt/hermes/.playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell'
 async def main():
