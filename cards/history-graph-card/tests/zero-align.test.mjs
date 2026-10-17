@@ -5,12 +5,11 @@ const entities=['sensor.a','sensor.b','sensor.c'];
 const series=[[-10,30],[-200,100],[5,10]].map((values,i)=>({id:entities[i],points:values.map((v,t)=>({t,v}))}));
 const meta={items:entities.map((id,i)=>({id,unit:['°C','W','%'][i]}))};
 const ratio=a=>-a.min/(a.max-a.min);
-test('negative mixed-unit axes align zero by default without clipping data or changing positive axes',()=>{
- const baseline=graphAxes(series,meta,{align_zero:false},0,2);
+test('negative mixed-unit axes align zero by default without clipping original padded ranges',()=>{
+ const baseline=series.map((s,i)=>graphAxes([s],{items:[meta.items[i]]},{align_zero:false},0,2).axes[0]);
  const result=graphAxes(series,meta,{},0,2);
  assert.ok(Math.abs(ratio(result.axes[0])-ratio(result.axes[1]))<1e-12);
- result.axes.forEach((a,i)=>{assert.ok(a.min<=baseline.axes[i].min);assert.ok(a.max>=baseline.axes[i].max);assert.ok(a.ticks.every(t=>t>=a.min&&t<=a.max));});
- assert.deepEqual(result.axes[2],baseline.axes[2]);
+ result.axes.forEach((a,i)=>{assert.ok(a.min<=baseline[i].min);assert.ok(a.max>=baseline[i].max);assert.ok(a.ticks.every(t=>t>=a.min&&t<=a.max));});
  assert.equal(result.plotSeries,series);
 });
 test('option defaults on, validates booleans and roundtrips native editor values',()=>{

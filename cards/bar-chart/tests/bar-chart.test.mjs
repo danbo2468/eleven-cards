@@ -22,7 +22,7 @@ test('positive-only and negative-only bars include zero independently for each u
 });
 test('grouped geometry gives each sensor its own slot and unavailable intervals stay empty',()=>{
  const c=fixture(),x=t=>t/3600,y=v=>300-v;
- const points=[{t:0,v:10},{t:3600000,v:null},{t:7200000,v:-5}];c._viewEnd=10800000;
+ const points=[{t:0,v:10},{t:3600000,v:null},{t:7200000,v:-5}];c._end=c._viewEnd=10800000;
  const a=c._line(points,10800000,x,y,0),b=c._line(points,10800000,x,y,1);
  assert.equal((a.match(/M /g)||[]).length,2);assert.match(a,/^M 120 300 V 290 H 462 V 300 Z/);
  assert.match(b,/^M 500 300 V 290 H 842 V 300 Z/);
