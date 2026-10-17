@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Timeline popup regression — synthetic data</title>
+<style>
+:root{font:14px system-ui;--primary-text-color:#212121;--secondary-text-color:#616161;--card-background-color:#fff;--secondary-background-color:#f2f3f4;--divider-color:#ddd;--primary-color:#2196f3;background:#f1f3f5;color:var(--primary-text-color)}
+:root.dark{color-scheme:dark;--primary-text-color:#f3f4f6;--secondary-text-color:#aaa;--card-background-color:#24252b;--secondary-background-color:#303139;--divider-color:#3a3b45;background:#141518}
+body{margin:16px;min-height:900px}nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}button{font:inherit;padding:6px}#stage{width:720px;max-width:100%}#stage.narrow{width:320px}pre{white-space:pre-wrap;font-size:12px}
+</style>
+<p>Synthetische gegevens. De kaart bouwt zijn slot bewust 80 ms later op.</p>
+<nav><button id="period">Tijdvak + herhaald verversen</button><button id="info">Informatie + herhaald verversen</button><button id="theme">Licht / donker</button><button id="width">320 / 720 px</button><button id="zoom">Zoom wisselen</button><button id="hover">Tooltip tonen</button><button id="cancel">Annuleren tijdens render</button></nav>
+<div id="stage"></div><pre id="result">Laden…</pre>
+<script type="module">
+if(new URLSearchParams(location.search).has('fallback'))Object.defineProperty(HTMLElement.prototype,'showPopover',{value:undefined,configurable:true});
+customElements.define('ha-card',class extends HTMLElement{
+ constructor(){super();const root=this.attachShadow({mode:'open'});root.innerHTML='<style>:host{display:block;min-height:200px;border:1px solid var(--divider-color);border-radius:12px}</style>';
+  this.updateComplete=new Promise(resolve=>setTimeout(()=>{root.innerHTML+='<slot></slot>';resolve(true);},80));
+ }
+});
+await import('../../cards/timeline-card/dist/eleven-timeline-card.js');
+const H=3600000,wait=ms=>new Promise(r=>setTimeout(r,ms)),ids=['switch.heating','sensor.mode'];
+const hass={language:'nl',config:{time_zone:'Europe/Amsterdam'},states:{'switch.heating':{attributes:{friendly_name:'Verwarming'}},'sensor.mode':{attributes:{friendly_name:'Bedrijfsmodus'}}},callApi:async(_,url)=>{
+ const start=Date.parse(url.split('?')[0].replace('history/period/',''));
+ return ids.map((entity_id,i)=>[i?['eco',1]:['off',0],i?['comfort',4]:['on',6],i?['unknown',12]:['off',15],i?['unavailable',18]:['on',20]].map(([state,hour])=>({entity_id,state,last_changed:new Date(start+hour*H).toISOString()})));
+}};
+const card=document.createElement('eleven-timeline-card');card.setConfig({entities:ids,title:'Timeline — popupcontrole',sync_hover:false});card.hass=hass;document.getElementById('stage').append(card);window.qaTimeline=card;
+while(card._inFlight)await wait(10);clearTimeout(card._timer);await wait(100);
+const isOpen=p=>typeof p.showPopover==='function'?p.matches(':popover-open'):p.hasAttribute('data-fallback-open');
+async function refreshPopup(kind){
+ const selector=kind==='period'?'[data-period=menu]':'[data-insight=data]';
+ card.shadowRoot.querySelector(selector).click();
+ for(let i=0;i<3;i++){card.hass={...hass};await wait(20);}
+ await wait(120);
+ const popup=card.shadowRoot.querySelector(kind==='period'?'.period-menu':'.insight-popup'),r=popup.getBoundingClientRect(),trigger=card.shadowRoot.querySelector(selector).getBoundingClientRect();
+ window.popupResult={kind,open:isOpen(popup),left:r.left,top:r.top,right:r.right,bottom:r.bottom,triggerLeft:trigger.left,triggerTop:trigger.top,focus:card.shadowRoot.activeElement?.outerHTML.slice(0,200),text:popup.innerText};
+ document.getElementById('result').textContent=JSON.stringify(window.popupResult,null,2);
+}
+document.getElementById('period').onclick=()=>refreshPopup('period');document.getElementById('info').onclick=()=>refreshPopup('info');
+document.getElementById('theme').onclick=()=>{document.documentElement.classList.toggle('dark');card.hass={...hass};};
+document.getElementById('width').onclick=()=>document.getElementById('stage').classList.toggle('narrow');
+document.getElementById('zoom').onclick=()=>card._zoom(card._viewport?0:.5);
+document.getElementById('hover').onclick=()=>card._showTooltip(card._viewStart+(card._viewEnd-card._viewStart)/2,false);
+document.getElementById('cancel').onclick=async()=>{window.cancelResults=[];for(const selector of ['[data-period=menu]','[data-insight=data]']){card.shadowRoot.querySelector(selector).click();card.hass={...hass};document.getElementById('cancel').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,composed:true}));await wait(120);window.cancelResults.push({selector,open:[...card.shadowRoot.querySelectorAll('.period-menu,.insight-popup')].some(isOpen)});}};
+document.getElementById('result').textContent='Gereed';window.timelineReady=true;
+</script></html>
