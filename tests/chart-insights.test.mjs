@@ -57,6 +57,16 @@ test('compact data information shows sources and short status labels without exp
  c._config.series_options=[{entity:'sensor.a',name:'<script>bad</script>'}];assert.doesNotMatch(chartDataInformation(c,'en'),/<script>/);
 });
 const metric=(html,id,key)=>html.match(new RegExp(`data-information-entity="${id}"[\\s\\S]*?data-metric="${key}">([^<]*)`))?.[1].trim();
+
+test('information preserves small measurements and totals, including negative and scientific values',()=>{
+ for(const slug of ['history-graph-card','bar-chart'])for(const v of [0.001,-0.001,0.000001,-0.000001,0]){
+  const c=fixture(slug,{aggregation_method:'delta'});
+  c._rawSeries=c._series.map(s=>({...s,points:s.points.map(p=>({...p,v:p.v===null?null:v}))}));c._render();
+  const expected=new Intl.NumberFormat('nl',v!==0&&Math.abs(v)<.0001?{maximumSignificantDigits:4,notation:'scientific'}:v!==0&&Math.abs(v)<.01?{maximumSignificantDigits:4}:{maximumFractionDigits:2}).format(v);
+  for(const key of ['minimum','maximum','average'])assert.equal(metric(c.shadowRoot.innerHTML,'sensor.a',key),expected,`${slug} ${key} ${v}`);
+  if(slug==='bar-chart'&&v===.001)assert.equal(metric(c.shadowRoot.innerHTML,'sensor.a','total'),'0,003');
+ }
+});
 test('bar information combines per-sensor metrics and totals before stacking and follows zoom',()=>{
  const c=fixture('bar-chart',{graph_mode:'stacked',aggregation_method:'delta'});
  assert.equal(c._plotSeries[1].points[0].v,6);
@@ -129,4 +139,11 @@ test('legend keyboard actions are immediate and disconnect cancels pending point
  buttons[0].onkeydown({shiftKey:true,key:'Enter',preventDefault(){},stopPropagation(){}});assert.equal(host._isSeriesVisible(0),true);assert.equal(host._isSeriesVisible(1),false);
  buttons[0].onkeydown({shiftKey:true,key:' ',preventDefault(){},stopPropagation(){}});assert.equal(host._isSeriesVisible(0),true);assert.equal(host._isSeriesVisible(1),true);
  buttons[0].onclick(clickEvent(1));disconnectChartInsights(host);await waitForLegend();assert.equal(host._isSeriesVisible(0),true);
+});
+
+test('bar legend clicks survive a refresh when the title is left at its default',async()=>{
+ const c=fixture('bar-chart'),config=c._config,buttons=c._config.entities.map(id=>({dataset:{series:id},setAttribute(){},focus(){}}));
+ c.shadowRoot.querySelectorAll=selector=>selector==='[data-series]'?buttons:[];bindChartLegend(c);
+ buttons[0].onclick(clickEvent(1));c._render();await waitForLegend();
+ assert.equal(c._isSeriesVisible(0),false);assert.strictEqual(c._config,config);
 });

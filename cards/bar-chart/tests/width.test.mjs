@@ -77,6 +77,28 @@ test('statistics bins retain their values and missing bins without being aggrega
  }
 });
 
+test('mixed statistics and raw history share the same stacked intervals without aggregation',()=>{
+ const statistics=[{t:0,v:10},{t:H,v:20},{t:2*H,v:30},{t:3*H,v:null}],history=[{t:0,v:1},{t:H/2,v:2},{t:1.25*H,v:3},{t:2*H,v:4}];
+ for(const reverse of [false,true]){
+  const points=reverse?[history,statistics]:[statistics,history],sources=reverse?['history','statistics']:['statistics','history'];
+  const c=fixture({points,sources,config:{graph_mode:'stacked',aggregation_period:'none'}});
+  for(const viewport of [null,[H*.4,H*2.1]]){
+   c._viewport=viewport;c._render();const [a,b]=assertUniform(c,[5,5]);
+   assert.deepEqual(a.map(p=>[p.left,p.right]),b.map(p=>[p.left,p.right]));
+   assert.deepEqual(a.map(p=>p.top),b.map(p=>p.base),'each segment rests on the bar below it');
+  }
+ }
+});
+
+test('bar summaries retain raw coverage lost by aggregation, also when zooming within a bin',()=>{
+ for(const aggregation_method of ['avg','min','max']){
+  const c=fixture({end:H,points:[[{t:0,v:10},{t:H/4,v:null},{t:3*H/4,v:30}]],config:{aggregation_method}});
+  assert.equal(c._dataInformation().rows[0].missing,true);
+  c._viewport=[H/4,H/2];c._render();assert.equal(c._dataInformation().rows[0].missing,true);
+  c._viewport=[0,H/4];c._render();assert.equal(c._dataInformation().rows[0].missing,false);
+ }
+});
+
 test('an all-missing aggregate is omitted rather than converted to zero',()=>{
  const c=fixture({points:[[{t:0,v:null}]]});assert.deepEqual(rectangles(c),[]);
  assert.ok(c._series[0].points.every(p=>p.v===null));

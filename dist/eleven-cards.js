@@ -2644,6 +2644,18 @@ function graphStyles() {
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Native toggle events are asynchronous. Clear the other popup's restore
+// state synchronously, also for browsers using the attribute fallback.
+function closeOtherCardPopups(host,kind){
+ const period=kind==='period',root=host.shadowRoot;
+ if(period){host._insightOpen=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodFocus=null;}
+ for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
+  if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
+  else panel.removeAttribute('data-fallback-open');
+ }
+ for(const trigger of root.querySelectorAll?.(period?'[data-insight]':'[data-period="menu"]')??[])trigger.setAttribute('aria-expanded','false');
+}
 function cardHeaderIcon(name){
  const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',info:'M12 17v-5M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',history:'M14 3h7v7M21 3 10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5',calendar:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z',down:'m6 9 6 6 6-6'};
  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
@@ -2784,10 +2796,14 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
+ host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
  if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
- if(previousMenu)host._periodMenuScroll=previousMenu.scrollTop;
+ if(previousMenu){
+  host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+ }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
  const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`)]);
@@ -2830,6 +2846,7 @@ function bindPeriodControls(host){
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
+  closeOtherCardPopups(host,'period');
   host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
   if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
   position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
@@ -2937,7 +2954,12 @@ function chartDataInformation(host,language='en'){
  const load=host._lastLoad;
  const summary=host._status==='ready'?host._dataInformation?.():load?.summary;
  if(load&&summary&&host._status==='ready')load.summary=summary;
- const value=v=>v===null?'—':insightEscape(new Intl.NumberFormat(language,{maximumFractionDigits:2}).format(v));
+ const value=v=>{
+  if(!Number.isFinite(v))return '—';
+  const small=v!==0&&Math.abs(v)<.01,options=small?{maximumSignificantDigits:4}:{maximumFractionDigits:2};
+  if(v!==0&&Math.abs(v)<.0001)options.notation='scientific';
+  return insightEscape(new Intl.NumberFormat(language,options).format(Object.is(v,-0)?0:v));
+ };
  let body=load?'':`<p role="status">${host._inFlight?(nl?'Laden…':'Loading…'):host._loadFailed?(nl?'Laadfout':'Load failed'):(nl?'Geen gegevens':'No data')}</p>`;
  if(load){
   body+=`<div class="insight-sensors">${chartEntityItems(host).map((item,i)=>{
@@ -2953,9 +2975,10 @@ function chartDataInformation(host,language='en'){
 }
 function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
+ host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- if(popup)host._insightOpen=popup.dataset.insightPanel;
+ host._insightOpen=popup?.dataset.insightPanel??null;
 }
 function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
 function bindChartInsights(host){
@@ -2967,7 +2990,7 @@ function bindChartInsights(host){
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
   const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
   const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -3776,10 +3799,11 @@ class HistoryGraphCard extends HTMLElement {
   const start=this._viewStart,end=this._viewEnd;
   return {start,end,rows:this._series.map((s,i)=>({...this._meta.items[i],...chartValueStatistics(s.points,start,end)}))};
  }
+ _defaultTitle(lang){return text('title',lang);}
  _render(){
   if(!this._config)return;captureChartInsights(this);const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
   let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
-  const title=this._config.title??text('title',lang);let content='';
+  const title=this._config.title??this._defaultTitle(lang);let content='';
   if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
   else{
    this._rawSeries??=this._series;
@@ -3934,6 +3958,18 @@ if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))windo
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Native toggle events are asynchronous. Clear the other popup's restore
+// state synchronously, also for browsers using the attribute fallback.
+function closeOtherCardPopups(host,kind){
+ const period=kind==='period',root=host.shadowRoot;
+ if(period){host._insightOpen=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodFocus=null;}
+ for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
+  if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
+  else panel.removeAttribute('data-fallback-open');
+ }
+ for(const trigger of root.querySelectorAll?.(period?'[data-insight]':'[data-period="menu"]')??[])trigger.setAttribute('aria-expanded','false');
+}
 function cardHeaderIcon(name){
  const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',info:'M12 17v-5M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',history:'M14 3h7v7M21 3 10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5',calendar:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z',down:'m6 9 6 6 6-6'};
  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
@@ -4216,10 +4252,14 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
+ host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
  if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
- if(previousMenu)host._periodMenuScroll=previousMenu.scrollTop;
+ if(previousMenu){
+  host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+ }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
  const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`)]);
@@ -4262,6 +4302,7 @@ function bindPeriodControls(host){
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
+  closeOtherCardPopups(host,'period');
   host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
   if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
   position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
@@ -4368,7 +4409,12 @@ function chartDataInformation(host,language='en'){
  const load=host._lastLoad;
  const summary=host._status==='ready'?host._dataInformation?.():load?.summary;
  if(load&&summary&&host._status==='ready')load.summary=summary;
- const value=v=>v===null?'—':insightEscape(new Intl.NumberFormat(language,{maximumFractionDigits:2}).format(v));
+ const value=v=>{
+  if(!Number.isFinite(v))return '—';
+  const small=v!==0&&Math.abs(v)<.01,options=small?{maximumSignificantDigits:4}:{maximumFractionDigits:2};
+  if(v!==0&&Math.abs(v)<.0001)options.notation='scientific';
+  return insightEscape(new Intl.NumberFormat(language,options).format(Object.is(v,-0)?0:v));
+ };
  let body=load?'':`<p role="status">${host._inFlight?(nl?'Laden…':'Loading…'):host._loadFailed?(nl?'Laadfout':'Load failed'):(nl?'Geen gegevens':'No data')}</p>`;
  if(load){
   body+=`<div class="insight-sensors">${chartEntityItems(host).map((item,i)=>{
@@ -4384,9 +4430,10 @@ function chartDataInformation(host,language='en'){
 }
 function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
+ host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- if(popup)host._insightOpen=popup.dataset.insightPanel;
+ host._insightOpen=popup?.dataset.insightPanel??null;
 }
 function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
 function bindChartInsights(host){
@@ -4398,7 +4445,7 @@ function bindChartInsights(host){
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
   const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
   const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -5005,6 +5052,18 @@ function graphStyles() {
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Native toggle events are asynchronous. Clear the other popup's restore
+// state synchronously, also for browsers using the attribute fallback.
+function closeOtherCardPopups(host,kind){
+ const period=kind==='period',root=host.shadowRoot;
+ if(period){host._insightOpen=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodFocus=null;}
+ for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
+  if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
+  else panel.removeAttribute('data-fallback-open');
+ }
+ for(const trigger of root.querySelectorAll?.(period?'[data-insight]':'[data-period="menu"]')??[])trigger.setAttribute('aria-expanded','false');
+}
 function cardHeaderIcon(name){
  const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',info:'M12 17v-5M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',history:'M14 3h7v7M21 3 10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5',calendar:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z',down:'m6 9 6 6 6-6'};
  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
@@ -5145,10 +5204,14 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
+ host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
  if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
- if(previousMenu)host._periodMenuScroll=previousMenu.scrollTop;
+ if(previousMenu){
+  host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+ }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
  const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`)]);
@@ -5191,6 +5254,7 @@ function bindPeriodControls(host){
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
+  closeOtherCardPopups(host,'period');
   host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
   if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
   position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
@@ -5298,7 +5362,12 @@ function chartDataInformation(host,language='en'){
  const load=host._lastLoad;
  const summary=host._status==='ready'?host._dataInformation?.():load?.summary;
  if(load&&summary&&host._status==='ready')load.summary=summary;
- const value=v=>v===null?'—':insightEscape(new Intl.NumberFormat(language,{maximumFractionDigits:2}).format(v));
+ const value=v=>{
+  if(!Number.isFinite(v))return '—';
+  const small=v!==0&&Math.abs(v)<.01,options=small?{maximumSignificantDigits:4}:{maximumFractionDigits:2};
+  if(v!==0&&Math.abs(v)<.0001)options.notation='scientific';
+  return insightEscape(new Intl.NumberFormat(language,options).format(Object.is(v,-0)?0:v));
+ };
  let body=load?'':`<p role="status">${host._inFlight?(nl?'Laden…':'Loading…'):host._loadFailed?(nl?'Laadfout':'Load failed'):(nl?'Geen gegevens':'No data')}</p>`;
  if(load){
   body+=`<div class="insight-sensors">${chartEntityItems(host).map((item,i)=>{
@@ -5314,9 +5383,10 @@ function chartDataInformation(host,language='en'){
 }
 function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
+ host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- if(popup)host._insightOpen=popup.dataset.insightPanel;
+ host._insightOpen=popup?.dataset.insightPanel??null;
 }
 function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
 function bindChartInsights(host){
@@ -5328,7 +5398,7 @@ function bindChartInsights(host){
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
   const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
   const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -6137,10 +6207,11 @@ class HistoryGraphCard extends HTMLElement {
   const start=this._viewStart,end=this._viewEnd;
   return {start,end,rows:this._series.map((s,i)=>({...this._meta.items[i],...chartValueStatistics(s.points,start,end)}))};
  }
+ _defaultTitle(lang){return text('title',lang);}
  _render(){
   if(!this._config)return;captureChartInsights(this);const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
   let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
-  const title=this._config.title??text('title',lang);let content='';
+  const title=this._config.title??this._defaultTitle(lang);let content='';
   if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
   else{
    this._rawSeries??=this._series;
@@ -6364,6 +6435,9 @@ class BarChartCard extends HistoryGraphCard {
   const start=this._viewStart,end=this._viewEnd,totals=this._config.aggregation_method==='delta'?deltaBarTotals(this._series,this._meta.items,{start:this._start,end:this._end,viewStart:start,viewEnd:end,period:this._config.aggregation_period,zone:this._zone}):[];
   const rows=this._series.map((s,i)=>{
    const stats=chartValueStatistics(s.points,start,end,(p,index)=>{const interval=this._barInterval(s.points,index,this._end,i);return [interval.start,interval.end];});
+   // Aggregation combines the known fragments into one bar. Its value does
+   // not prove that the underlying sensor covered the whole visible period.
+   stats.missing||=chartValueStatistics(this._rawSeries?.[i]?.points??s.points,start,end).missing;
    return {...this._meta.items[i],...stats,...(totals[i]?{total:totals[i].value,clipped:totals[i].clipped}: {})};
   });
   return {start,end,bars:true,rows};
@@ -6384,8 +6458,11 @@ class BarChartCard extends HistoryGraphCard {
   grouped.axes=alignGridAxes(alignZeroAxes(grouped.axes,this._config,meta.items[0]?.unit),this._config);
   return grouped;
  }
- _barInterval(points,index,end,seriesIndex){
-  const p=points[index],period=this._config.aggregation_period==='none'&&this._series[seriesIndex]?.source==='statistics'?'hour':this._config.aggregation_period;
+ _barInterval(points,index,end,seriesIndex,plot=false){
+  // Stacking has already synchronized timestamps across all sensors. Use
+  // those intervals for every layer, including statistics/history mixtures.
+  const stacked=plot&&this._config.graph_mode==='stacked';
+  const p=points[index],period=this._config.aggregation_period==='none'&&!stacked&&this._series[seriesIndex]?.source==='statistics'?'hour':this._config.aggregation_period;
   const [start,finish]=period==='none'?[p.t,points[index+1]?.t??end]:periodBounds(p.t,period,this._zone);
   return {start:Math.max(this._start,start),end:Math.min(end,finish),duration:finish-start};
  }
@@ -6396,7 +6473,7 @@ class BarChartCard extends HistoryGraphCard {
   const centers=new Set(),intervals=[];let duration=this._viewEnd-this._viewStart;
   for(const index of visible){const points=source[index]?.points??[];
    for(let i=0;i<points.length;i++){
-    const interval=this._barInterval(points,i,this._end,index),a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
+    const interval=this._barInterval(points,i,this._end,index,true),a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
     if(b<=a)continue;
     duration=Math.min(duration,interval.duration);centers.add((a+b)/2);
     if(Number.isFinite(points[i].v))intervals.push({interval,index});
@@ -6421,7 +6498,7 @@ class BarChartCard extends HistoryGraphCard {
  _barAt(timestamp,index){
   const points=(this._plotSeries??this._series)[index].points;let low=0,high=points.length;
   while(low<high){const middle=(low+high)>>1;if(points[middle].t<=timestamp)low=middle+1;else high=middle;}
-  return low?this._barInterval(points,low-1,this._end,index):null;
+  return low?this._barInterval(points,low-1,this._end,index,true):null;
  }
  _pointerTime(timestamp){
   // An edge bar may be inset beyond its period. Hit-test the painted bars for
@@ -6433,7 +6510,7 @@ class BarChartCard extends HistoryGraphCard {
  _line(points,end,x,y,index=0){
   let path='';
   for(let i=0;i<points.length;i++){
-   const p=points[i],interval=this._barInterval(points,i,Math.min(this._end,end),index);
+   const p=points[i],interval=this._barInterval(points,i,Math.min(this._end,end),index,true);
    if(!Number.isFinite(p.v)||interval.end<=this._viewStart||interval.start>=this._viewEnd||interval.end<=interval.start)continue;
    const {left:l,right:r}=this._barGeometry(interval,x,index),base=this._config.graph_mode==='stacked'?(p.base??0):0;
    path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
@@ -6477,12 +6554,7 @@ class BarChartCard extends HistoryGraphCard {
   tooltip.style.left=`${Math.max(4,Math.min(box.width-measured.width-4,px+14+measured.width>box.width-4?px-measured.width-14:px+14))}px`;
   if(publish)SharedGraph.publishHover(this,(interval.start+interval.end)/2);
  }
- _render(){
-  if(this._config&&this._config.title===undefined){
-   const title=language(this._hass)==='nl'?'Staafdiagram':'Bar chart';
-   this._config={...this._config,title};super._render();delete this._config.title;
-  }else super._render();
- }
+ _defaultTitle(lang){return lang==='nl'?'Staafdiagram':'Bar chart';}
  _styles(){
   const paints=this._config?.entities.map((id,i)=>`.series-bar[data-entity="${id}"]{fill:${this._appearance(i).stroke};stroke:none}`).join('')??'';
   return super._styles()+`\n${paints}\n.series-bar{stroke:none}.legend i{height:12px;width:8px;border:0!important;border-radius:2px;background:var(--series-color)}

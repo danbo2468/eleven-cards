@@ -81,6 +81,9 @@ export class BarChartCard extends HistoryGraphCard {
   const start=this._viewStart,end=this._viewEnd,totals=this._config.aggregation_method==='delta'?deltaBarTotals(this._series,this._meta.items,{start:this._start,end:this._end,viewStart:start,viewEnd:end,period:this._config.aggregation_period,zone:this._zone}):[];
   const rows=this._series.map((s,i)=>{
    const stats=chartValueStatistics(s.points,start,end,(p,index)=>{const interval=this._barInterval(s.points,index,this._end,i);return [interval.start,interval.end];});
+   // Aggregation combines the known fragments into one bar. Its value does
+   // not prove that the underlying sensor covered the whole visible period.
+   stats.missing||=chartValueStatistics(this._rawSeries?.[i]?.points??s.points,start,end).missing;
    return {...this._meta.items[i],...stats,...(totals[i]?{total:totals[i].value,clipped:totals[i].clipped}: {})};
   });
   return {start,end,bars:true,rows};
@@ -101,8 +104,11 @@ export class BarChartCard extends HistoryGraphCard {
   grouped.axes=alignGridAxes(alignZeroAxes(grouped.axes,this._config,meta.items[0]?.unit),this._config);
   return grouped;
  }
- _barInterval(points,index,end,seriesIndex){
-  const p=points[index],period=this._config.aggregation_period==='none'&&this._series[seriesIndex]?.source==='statistics'?'hour':this._config.aggregation_period;
+ _barInterval(points,index,end,seriesIndex,plot=false){
+  // Stacking has already synchronized timestamps across all sensors. Use
+  // those intervals for every layer, including statistics/history mixtures.
+  const stacked=plot&&this._config.graph_mode==='stacked';
+  const p=points[index],period=this._config.aggregation_period==='none'&&!stacked&&this._series[seriesIndex]?.source==='statistics'?'hour':this._config.aggregation_period;
   const [start,finish]=period==='none'?[p.t,points[index+1]?.t??end]:periodBounds(p.t,period,this._zone);
   return {start:Math.max(this._start,start),end:Math.min(end,finish),duration:finish-start};
  }
@@ -113,7 +119,7 @@ export class BarChartCard extends HistoryGraphCard {
   const centers=new Set(),intervals=[];let duration=this._viewEnd-this._viewStart;
   for(const index of visible){const points=source[index]?.points??[];
    for(let i=0;i<points.length;i++){
-    const interval=this._barInterval(points,i,this._end,index),a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
+    const interval=this._barInterval(points,i,this._end,index,true),a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
     if(b<=a)continue;
     duration=Math.min(duration,interval.duration);centers.add((a+b)/2);
     if(Number.isFinite(points[i].v))intervals.push({interval,index});
@@ -138,7 +144,7 @@ export class BarChartCard extends HistoryGraphCard {
  _barAt(timestamp,index){
   const points=(this._plotSeries??this._series)[index].points;let low=0,high=points.length;
   while(low<high){const middle=(low+high)>>1;if(points[middle].t<=timestamp)low=middle+1;else high=middle;}
-  return low?this._barInterval(points,low-1,this._end,index):null;
+  return low?this._barInterval(points,low-1,this._end,index,true):null;
  }
  _pointerTime(timestamp){
   // An edge bar may be inset beyond its period. Hit-test the painted bars for
@@ -150,7 +156,7 @@ export class BarChartCard extends HistoryGraphCard {
  _line(points,end,x,y,index=0){
   let path='';
   for(let i=0;i<points.length;i++){
-   const p=points[i],interval=this._barInterval(points,i,Math.min(this._end,end),index);
+   const p=points[i],interval=this._barInterval(points,i,Math.min(this._end,end),index,true);
    if(!Number.isFinite(p.v)||interval.end<=this._viewStart||interval.start>=this._viewEnd||interval.end<=interval.start)continue;
    const {left:l,right:r}=this._barGeometry(interval,x,index),base=this._config.graph_mode==='stacked'?(p.base??0):0;
    path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
@@ -194,12 +200,7 @@ export class BarChartCard extends HistoryGraphCard {
   tooltip.style.left=`${Math.max(4,Math.min(box.width-measured.width-4,px+14+measured.width>box.width-4?px-measured.width-14:px+14))}px`;
   if(publish)SharedGraph.publishHover(this,(interval.start+interval.end)/2);
  }
- _render(){
-  if(this._config&&this._config.title===undefined){
-   const title=language(this._hass)==='nl'?'Staafdiagram':'Bar chart';
-   this._config={...this._config,title};super._render();delete this._config.title;
-  }else super._render();
- }
+ _defaultTitle(lang){return lang==='nl'?'Staafdiagram':'Bar chart';}
  _styles(){
   const paints=this._config?.entities.map((id,i)=>`.series-bar[data-entity="${id}"]{fill:${this._appearance(i).stroke};stroke:none}`).join('')??'';
   return super._styles()+`\n${paints}\n.series-bar{stroke:none}.legend i{height:12px;width:8px;border:0!important;border-radius:2px;background:var(--series-color)}

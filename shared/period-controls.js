@@ -1,4 +1,4 @@
-import {cardHeaderIcon} from './card-header.js';
+import {cardHeaderIcon,closeOtherCardPopups} from './card-header.js';
 import {graphPeriodRange,chooseGraphPeriod,moveGraphPeriod} from './periods.js';
 const periodEscape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
@@ -34,10 +34,14 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 export function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
+ host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
  if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
- if(previousMenu)host._periodMenuScroll=previousMenu.scrollTop;
+ if(previousMenu){
+  host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+ }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
  const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`)]);
@@ -80,6 +84,7 @@ export function bindPeriodControls(host){
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
+  closeOtherCardPopups(host,'period');
   host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
   if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
   position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});

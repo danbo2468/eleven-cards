@@ -1,6 +1,18 @@
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Native toggle events are asynchronous. Clear the other popup's restore
+// state synchronously, also for browsers using the attribute fallback.
+export function closeOtherCardPopups(host,kind){
+ const period=kind==='period',root=host.shadowRoot;
+ if(period){host._insightOpen=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodFocus=null;}
+ for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
+  if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
+  else panel.removeAttribute('data-fallback-open');
+ }
+ for(const trigger of root.querySelectorAll?.(period?'[data-insight]':'[data-period="menu"]')??[])trigger.setAttribute('aria-expanded','false');
+}
 export function cardHeaderIcon(name){
  const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',info:'M12 17v-5M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',history:'M14 3h7v7M21 3 10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5',calendar:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z',down:'m6 9 6 6 6-6'};
  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;

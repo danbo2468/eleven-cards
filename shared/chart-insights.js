@@ -1,4 +1,4 @@
-import {cardHeaderIcon} from './card-header.js';
+import {cardHeaderIcon,closeOtherCardPopups} from './card-header.js';
 const insightEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function chartZoomState(host){
  const total=host._end-host._start,ready=host._status==='ready'&&Number.isFinite(total)&&total>0;
@@ -61,7 +61,12 @@ export function chartDataInformation(host,language='en'){
  const load=host._lastLoad;
  const summary=host._status==='ready'?host._dataInformation?.():load?.summary;
  if(load&&summary&&host._status==='ready')load.summary=summary;
- const value=v=>v===null?'—':insightEscape(new Intl.NumberFormat(language,{maximumFractionDigits:2}).format(v));
+ const value=v=>{
+  if(!Number.isFinite(v))return '—';
+  const small=v!==0&&Math.abs(v)<.01,options=small?{maximumSignificantDigits:4}:{maximumFractionDigits:2};
+  if(v!==0&&Math.abs(v)<.0001)options.notation='scientific';
+  return insightEscape(new Intl.NumberFormat(language,options).format(Object.is(v,-0)?0:v));
+ };
  let body=load?'':`<p role="status">${host._inFlight?(nl?'Laden…':'Loading…'):host._loadFailed?(nl?'Laadfout':'Load failed'):(nl?'Geen gegevens':'No data')}</p>`;
  if(load){
   body+=`<div class="insight-sensors">${chartEntityItems(host).map((item,i)=>{
@@ -77,9 +82,10 @@ export function chartDataInformation(host,language='en'){
 }
 export function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
+ host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- if(popup)host._insightOpen=popup.dataset.insightPanel;
+ host._insightOpen=popup?.dataset.insightPanel??null;
 }
 export function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
 export function bindChartInsights(host){
@@ -91,7 +97,7 @@ export function bindChartInsights(host){
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
   const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
   const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
