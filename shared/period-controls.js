@@ -39,7 +39,7 @@ export function periodControls(host,language='en'){
  if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
-  host._periodMenuScroll=previousMenu.scrollTop;
+  if(!host._periodMenuPending)host._periodMenuScroll=previousMenu.scrollTop;
   host._periodMenuOpen=!!host._periodMenuPending||(typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open'));
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
@@ -71,12 +71,15 @@ export function bindPeriodControls(host){
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
  const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
- let focusPending=false;
+ let focusPending=false,scrollPending=false;
  const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
   host._periodMenuPending=false;
   if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
   if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
   restorePeriodFocus(host,items);
+  // Hidden replacement menus have no scrolling box. Restore only once, after
+  // opening at the constrained height, without undoing subsequent user scroll.
+  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
  }),position=placement.position;
  cleanups.push(()=>placement.disconnect());
  const close=(restore=false)=>{
@@ -86,7 +89,7 @@ export function bindPeriodControls(host){
  };
  const open=(focus=true)=>{
   closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;trigger.setAttribute('aria-expanded','true');
+  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
   position();
  };
  // Remember the pointer state before native light dismissal runs on pointerup.
@@ -107,7 +110,7 @@ export function bindPeriodControls(host){
  listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
  listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
  listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
- if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
+ if(host._periodMenuOpen)open(false);
  if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
 export function periodControlsStyles(){return `

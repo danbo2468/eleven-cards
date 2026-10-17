@@ -7,7 +7,7 @@
 body{margin:16px;min-height:900px}nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}button{font:inherit;padding:6px}#stage{width:720px;max-width:100%}#stage.narrow{width:320px}pre{white-space:pre-wrap;font-size:12px}
 </style>
 <p>Synthetische gegevens. De kaart bouwt zijn slot bewust 80 ms later op.</p>
-<nav><button id="period">Tijdvak + herhaald verversen</button><button id="info">Informatie + herhaald verversen</button><button id="theme">Licht / donker</button><button id="width">320 / 720 px</button><button id="zoom">Zoom wisselen</button><button id="hover">Tooltip tonen</button><button id="cancel">Annuleren tijdens render</button></nav>
+<nav><button id="period">Tijdvak + herhaald verversen</button><button id="info">Informatie + herhaald verversen</button><button id="scroll">Tijdvak scrollen + verversen</button><button id="outside">Buitenklik</button><button id="theme">Licht / donker</button><button id="width">320 / 720 px</button><button id="zoom">Zoom wisselen</button><button id="hover">Tooltip tonen</button><button id="cancel">Annuleren tijdens render</button></nav>
 <div id="stage"></div><pre id="result">Laden…</pre>
 <script type="module">
 if(new URLSearchParams(location.search).has('fallback'))Object.defineProperty(HTMLElement.prototype,'showPopover',{value:undefined,configurable:true});
@@ -35,6 +35,19 @@ async function refreshPopup(kind){
  document.getElementById('result').textContent=JSON.stringify(window.popupResult,null,2);
 }
 document.getElementById('period').onclick=()=>refreshPopup('period');document.getElementById('info').onclick=()=>refreshPopup('info');
+// Use a short viewport (e.g. a 360 px iframe) to make the menu scroll. Verify
+// both ?fallback=1 and native popovers; click Buitenklik after restored info.
+window.refreshScrolledMenu=async()=>{
+ card.shadowRoot.querySelector('[data-insight-close]').click();
+ let menu=card.shadowRoot.querySelector('.period-menu');
+ if(!isOpen(menu))card.shadowRoot.querySelector('[data-period=menu]').click();
+ menu.scrollTop=180;const before=menu.scrollTop;
+ for(let i=0;i<3;i++){card.hass={...hass};await wait(20);}
+ await wait(120);menu=card.shadowRoot.querySelector('.period-menu');
+ window.scrollResult={before,after:menu.scrollTop,open:isOpen(menu),height:menu.clientHeight,scrollHeight:menu.scrollHeight,viewport:innerHeight};
+ document.getElementById('result').textContent=JSON.stringify(window.scrollResult,null,2);return window.scrollResult;
+};
+document.getElementById('scroll').onclick=window.refreshScrolledMenu;
 document.getElementById('theme').onclick=()=>{document.documentElement.classList.toggle('dark');card.hass={...hass};};
 document.getElementById('width').onclick=()=>document.getElementById('stage').classList.toggle('narrow');
 document.getElementById('zoom').onclick=()=>card._zoom(card._viewport?0:.5);

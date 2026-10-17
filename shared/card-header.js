@@ -9,9 +9,9 @@ export function bindCardPopupPosition(host,trigger,popup,isRequested,show){
   // A newly inserted ha-card may not have rendered its slot yet. Never anchor
   // an open popup to its temporarily empty trigger rectangle at (0, 0).
   if(!box.width||!box.height){popup.style.visibility='hidden';return;}
-  popup.style.visibility='';show?.();
   const width=Math.min(380,window.innerWidth-16);
   popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
+  popup.style.visibility='';show?.();
   const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
   popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
   popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';

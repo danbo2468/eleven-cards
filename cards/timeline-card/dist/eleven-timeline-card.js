@@ -10,9 +10,9 @@ function bindCardPopupPosition(host,trigger,popup,isRequested,show){
   // A newly inserted ha-card may not have rendered its slot yet. Never anchor
   // an open popup to its temporarily empty trigger rectangle at (0, 0).
   if(!box.width||!box.height){popup.style.visibility='hidden';return;}
-  popup.style.visibility='';show?.();
   const width=Math.min(380,window.innerWidth-16);
   popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
+  popup.style.visibility='';show?.();
   const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
   popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
   popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
@@ -322,7 +322,7 @@ function periodControls(host,language='en'){
  if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
-  host._periodMenuScroll=previousMenu.scrollTop;
+  if(!host._periodMenuPending)host._periodMenuScroll=previousMenu.scrollTop;
   host._periodMenuOpen=!!host._periodMenuPending||(typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open'));
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
@@ -354,12 +354,15 @@ function bindPeriodControls(host){
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
  const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
- let focusPending=false;
+ let focusPending=false,scrollPending=false;
  const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
   host._periodMenuPending=false;
   if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
   if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
   restorePeriodFocus(host,items);
+  // Hidden replacement menus have no scrolling box. Restore only once, after
+  // opening at the constrained height, without undoing subsequent user scroll.
+  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
  }),position=placement.position;
  cleanups.push(()=>placement.disconnect());
  const close=(restore=false)=>{
@@ -369,7 +372,7 @@ function bindPeriodControls(host){
  };
  const open=(focus=true)=>{
   closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;trigger.setAttribute('aria-expanded','true');
+  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
   position();
  };
  // Remember the pointer state before native light dismissal runs on pointerup.
@@ -390,7 +393,7 @@ function bindPeriodControls(host){
  listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
  listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
  listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
- if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
+ if(host._periodMenuOpen)open(false);
  if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
 function periodControlsStyles(){return `
@@ -532,7 +535,9 @@ function bindChartInsights(host){
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
   listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
   listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&host._insightOpen===key&&!e.composedPath().includes(control))close();});
+  // Restored focus has a capture listener that may already clear restore state.
+  // A fallback popup still needs dismissal based on its actual visible state.
+  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
  restoreChartInsightFocus(host);

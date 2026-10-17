@@ -119,7 +119,9 @@ export function bindChartInsights(host){
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
   listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
   listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&host._insightOpen===key&&!e.composedPath().includes(control))close();});
+  // Restored focus has a capture listener that may already clear restore state.
+  // A fallback popup still needs dismissal based on its actual visible state.
+  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
  restoreChartInsightFocus(host);
