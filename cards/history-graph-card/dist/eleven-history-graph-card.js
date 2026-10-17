@@ -151,24 +151,408 @@ function graphStyles() {
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Native toggle events are asynchronous. Clear the other popup's restore
+// state synchronously, also for browsers using the attribute fallback.
+function closeOtherCardPopups(host,kind){
+ const period=kind==='period',root=host.shadowRoot;
+ if(period){host._insightOpen=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodFocus=null;}
+ for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
+  if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
+  else panel.removeAttribute('data-fallback-open');
+ }
+ for(const trigger of root.querySelectorAll?.(period?'[data-insight]':'[data-period="menu"]')??[])trigger.setAttribute('aria-expanded','false');
+}
 function cardHeaderIcon(name){
- const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',history:'m9 6 6 6-6 6'};
+ const paths={in:'M5 12h14M12 5v14',out:'M5 12h14',reset:'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6',previous:'m15 6-6 6 6 6',next:'m9 6 6 6-6 6',info:'M12 17v-5M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',history:'M14 3h7v7M21 3 10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5',calendar:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z',down:'m6 9 6 6 6-6'};
  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}"/></svg>`;
 }
-function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en'}){
- const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Geschiedenis']:['Zoom in','Zoom out','Reset zoom','History'];
- const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['in','out','reset'].map((action,i)=>`<button type="button" data-zoom="${action}" title="${label[i]}" aria-label="${label[i]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
- return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${zoom}<a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a></div></header>`;
+function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en',periods={},zoomState={in:true,out:true,reset:true,zoomed:false},information=''}){
+ const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Open in Home Assistant Geschiedenis']:['Zoom in','Zoom out','Reset zoom','Open in Home Assistant History'];
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['out','in','reset'].map(action=>`<button type="button" data-zoom="${action}"${zoomState[action]?'':' disabled'} title="${label[['in','out','reset'].indexOf(action)]}" aria-label="${label[['in','out','reset'].indexOf(action)]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
+ const group=periods.navigation||zoom?`<div class="chart-controls" role="group" aria-label="${nl?'Periode en zoom':'Period and zoom'}">${periods.navigation??''}${zoom}</div>`:'';
+ const showZoomStatus=zoomState.zoomed&&!periods.picker;
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${periods.picker??''}${group}<div class="chart-links"><a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a>${information}</div></div></header>${showZoomStatus?`<div class="chart-context"><div class="chart-range"><span class="zoom-status">${nl?'Ingezoomd':'Zoomed in'}</span></div></div>`:''}`;
 }
 function cardHeaderStyles(){return `
-.card-header{display:flex;align-items:flex-start;gap:8px;min-height:32px;flex:none;margin:-6px -4px 12px 0}
-.card-header h2{flex:1;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
-.header-actions{display:flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto}
-.zoom-controls{display:flex;gap:2px}
-.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--secondary-text-color,#666);text-decoration:none;cursor:pointer}
+.card-header{display:flex;align-items:flex-start;flex-wrap:wrap;gap:8px;min-height:32px;flex:none;margin:-6px -4px 10px 0}
+.card-header h2{flex:1 1 110px;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
+.header-actions{--chart-action-gap:8px;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:var(--chart-action-gap);flex:0 1 auto;min-width:0;max-width:100%;margin-inline-start:auto}
+.chart-controls{display:flex;align-items:center;flex-wrap:wrap;gap:0;max-width:100%}
+.chart-links{display:flex;align-items:center;gap:var(--chart-action-gap);flex:none}
+.zoom-controls{display:flex;gap:0;position:relative}
+.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;font:inherit;font-size:12px;font-weight:400;width:32px;height:32px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--primary-text-color,#20252b);text-decoration:none;cursor:pointer;flex:none}
+.chart-controls,.chart-links>.history-link{background:var(--secondary-background-color,#eee);border-radius:5px}
+.chart-controls button:not(:disabled):hover,.chart-links>.history-link:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
+.chart-controls>[data-period="now"]{width:36px}
+.chart-controls>[data-period="next"]+.zoom-controls{margin-inline-start:8px;padding-inline-start:8px}
+.chart-controls>[data-period="next"]+.zoom-controls::before{content:"";position:absolute;inset-inline-start:0;top:8px;height:16px;width:1px;background:var(--divider-color,#ddd)}
+.header-actions button:disabled{opacity:.35;cursor:default}
 .header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
 .header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
-.header-actions svg,.period-controls button svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.header-actions svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.period-menu,.insight-popup{display:none;position:fixed;inset:auto;margin:0;padding:8px 12px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain;z-index:20;max-width:calc(100vw - 16px);border:1px solid var(--divider-color,#ddd);border-radius:10px;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b);font:inherit;font-size:12px;line-height:1.35;box-shadow:0 8px 28px #0004}
+.chart-popup-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:30px}
+.chart-popup-heading>strong{font-size:14px;font-weight:600}
+.period-menu .chart-popup-heading>button,.insight-popup .chart-popup-heading>button{display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:0;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;font-size:20px;font-weight:400;flex:none;cursor:pointer}
+`;}
+
+// ../../shared/periods.js
+// Calendar periods use the Home Assistant timezone, including DST boundaries.
+const periodZoneFormats=new Map();
+function periodLocalParts(t,zone){
+ let format=periodZoneFormats.get(zone);
+ if(!format){format=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});periodZoneFormats.set(zone,format);}
+ return Object.fromEntries(format.formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,Number(p.value)]));
+}
+function periodLocalEpoch(t,zone){const p=periodLocalParts(t,zone);return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);}
+function periodMidnight(nominal,zone){
+ let t=nominal;for(let i=0;i<6;i++){const next=nominal-(periodLocalEpoch(t,zone)-t);if(next===t)return t;t=next;}
+ // Midnight can be skipped by a timezone transition. Use the first valid
+ // instant of that local date rather than oscillating across the transition.
+ let low=nominal-36*3600000,high=nominal+36*3600000;
+ while(high-low>1000){const mid=Math.floor((low+high)/2000)*1000,p=periodLocalParts(mid,zone);if(Date.UTC(p.year,p.month-1,p.day)>=nominal)high=mid;else low=mid;}
+ return high;
+}
+function graphPeriodBounds(t,period,zone='UTC'){
+ zone ||= 'UTC';const p=periodLocalParts(t,zone),size={minute:60000,quarter_hour:900000,hour:3600000}[period];
+ if(size){const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second),a=t-(local%size)-(t%1000);return [a,a+size];}
+ let nominal=Date.UTC(p.year,p.month-1,period==='month'?1:p.day);let next;
+ if(period==='week'){const day=new Date(nominal).getUTCDay();nominal-=((day+6)%7)*86400000;next=nominal+7*86400000;}
+ else if(period==='month')next=Date.UTC(p.year,p.month,1);
+ else next=nominal+86400000;
+ return [periodMidnight(nominal,zone),periodMidnight(next,zone)];
+}
+const periodCalendarModes=['today','week','month','quarter','year'];
+const periodPresetHours={'1h':1,'6h':6,'12h':12,'24h':24,'48h':48,'7d':168,'14d':336,'30d':720,'90d':2160,'365d':8760};
+function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;}
+function graphPeriodRange(host,now=Date.now()){
+ const mode=host._periodMode,offset=host._periodOffset??0;
+ if(periodCalendarModes.includes(mode)){
+  const zone=host._hass?.config?.time_zone||'UTC',p=periodLocalParts(host._periodAnchor??now,zone);
+  let nominal,finishNominal;
+  if(mode==='week'){
+   nominal=Date.UTC(p.year,p.month-1,p.day);nominal+=(offset*7-(new Date(nominal).getUTCDay()+6)%7)*86400000;finishNominal=nominal+7*86400000;
+  }else if(mode==='month'||mode==='quarter'){
+   const size=mode==='quarter'?3:1,month=(mode==='quarter'?Math.floor((p.month-1)/3)*3:p.month-1)+offset*size;
+   nominal=Date.UTC(p.year,month,1);finishNominal=Date.UTC(p.year,month+size,1);
+  }else if(mode==='year'){nominal=Date.UTC(p.year+offset,0,1);finishNominal=Date.UTC(p.year+offset+1,0,1);}
+  else{nominal=Date.UTC(p.year,p.month-1,p.day+offset);finishNominal=nominal+86400000;}
+  const start=periodMidnight(nominal,zone),finish=periodMidnight(finishNominal,zone);
+  return {start,end:Math.max(start+1,Math.min(now,finish))};
+ }
+ const end=host._periodEnd??now;
+ return {start:end-(host._periodHours??host._config.hours_to_show)*3600000,end};
+}
+function chooseGraphPeriod(host,value){
+ const calendar=value==='configured'||periodCalendarModes.includes(value),hours=periodPresetHours[value]??Number(value);
+ if(!calendar&&(!Number.isFinite(hours)||hours<1||hours>8760))return;
+ resetGraphPeriod(host);
+ host._periodMode=calendar?value:Object.entries(periodPresetHours).find(([,h])=>h===hours)?.[0]??String(value);
+ if(!calendar)host._periodHours=hours;
+ return host._reloadPeriod();
+}
+function moveGraphPeriod(host,direction){
+ if(![-1,0,1].includes(direction))return;
+ if(direction===0){host._periodOffset=0;host._periodEnd=null;host._periodAnchor=null;}
+ else{
+  const previous=host._periodOffset??0;
+  const calendar=periodCalendarModes.includes(host._periodMode);
+  if(previous===0)host._periodAnchor=calendar?Date.now():host._status==='ready'?(host._end??Date.now()):Date.now();
+  host._periodOffset=Math.min(0,previous+direction);
+  if(host._periodOffset===0)host._periodAnchor=null;
+  if(!calendar){
+   host._periodEnd=host._periodOffset===0?null:host._periodAnchor+host._periodOffset*(host._periodHours??host._config.hours_to_show)*3600000;
+  }
+ }
+ return host._reloadPeriod();
+}
+
+// ../../shared/period-controls.js
+const periodEscape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
+ const format=options=>new Intl.DateTimeFormat(locale,{timeZone:zone,...options});
+ const dates=format({year:'numeric',month:'numeric',day:'numeric'});
+ const parts=t=>Object.fromEntries(dates.formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,Number(p.value)]));
+ const a=parts(start),b=parts(end),currentYear=parts(Date.now()).year;
+ const dayMonth=format({day:'numeric',month:'short'}),dayYear=format({day:'numeric',month:'short',year:'numeric'});
+ const sameDay=a.year===b.year&&a.month===b.month&&a.day===b.day;
+ const dateRange=(from,to)=>{
+  const first=parts(from),last=parts(to),year=first.year!==currentYear?` ${first.year}`:'';
+  if(first.year!==last.year)return `${dayYear.format(from)}–${dayYear.format(to)}`;
+  if(first.month===last.month)return `${first.day===last.day?'':`${first.day}–`}${dayMonth.format(to)}${year}`;
+  return `${dayMonth.format(from)}–${dayMonth.format(to)}${year}`;
+ };
+ if(zoomed||(past&&!['today','week','month','quarter','year'].includes(mode)&&hours<24)){
+  const time=format({hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  if(sameDay){
+   const offsets=format({timeZoneName:'shortOffset'}),offset=t=>offsets.formatToParts(t).find(p=>p.type==='timeZoneName')?.value;
+   const clock=offset(start)!==offset(end)?format({hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZoneName:'shortOffset'}):time;
+   return `${(a.year===currentYear?dayMonth:dayYear).format(start)} · ${clock.format(start)}–${clock.format(end)}`;
+  }
+  if(end-start<48*3600000)return `${(a.year===b.year&&a.year===currentYear?dayMonth:dayYear).format(start)} ${time.format(start)}–${(a.year===b.year&&a.year===currentYear?dayMonth:dayYear).format(end)} ${time.format(end)}`;
+  return dateRange(start,end);
+ }
+ if(mode==='month'){const month=format({month:'long',year:'numeric'}).format(start);return month[0].toLocaleUpperCase(locale)+month.slice(1);}
+ if(mode==='quarter')return `Q${Math.ceil(a.month/3)} ${a.year}`;
+ if(mode==='year')return String(a.year);
+ if(mode==='week')return dateRange(start,Math.max(start,end-1));
+ if(mode==='today')return past?dateRange(start,Math.max(start,end-1)):name;
+ if(past)return `${dateRange(start,end)} · ${hours>=168&&hours%24===0?`${hours/24} ${locale==='nl-NL'?'dagen':'days'}`:`${hours} ${locale==='nl-NL'?'uur':hours===1?'hour':'hours'}`}`;
+ return name;
+}
+function periodControls(host,language='en'){
+ const active=host.shadowRoot.activeElement;
+ host._periodFocus=null;
+ if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
+ if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
+ const previousMenu=host.shadowRoot.querySelector('.period-menu');
+ if(previousMenu){
+  host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+ }
+ const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
+ const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
+ const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`)]);
+ const calendar=[['today',label('Today','Vandaag'),label('Day','Dag')],['week',label('This week','Deze week'),label('Week','Week')],['month',label('This month','Deze maand'),label('Month','Maand')],['quarter',label('This quarter','Dit kwartaal'),label('Quarter','Kwartaal')],['year',label('This year','Dit jaar'),label('Year','Jaar')]];
+ if(host._periodHours!=null&&!rolling.some(([id])=>id===mode))rolling.push([mode,label(`${host._periodHours} hours`,`${host._periodHours} uur`)]);
+ const calendarChoice=calendar.find(([id])=>id===mode),name=mode==='configured'?standard:calendarChoice?.[past?2:1]??rolling.find(([id])=>id===mode)?.[1]??standard;
+ const choice=([value,text])=>`<button type="button" role="menuitemradio" aria-checked="${value===mode}" tabindex="-1" data-period-option="${periodEscape(value)}"><span>${periodEscape(text)}</span><span aria-hidden="true">${value===mode?'✓':''}</span></button>`;
+ const {start,end}=host._status==='ready'&&Number.isFinite(host._viewStart)&&Number.isFinite(host._viewEnd)?{start:host._viewStart,end:host._viewEnd}:graphPeriodRange(host);
+ const locale=nl?'nl-NL':'en-GB',zone=host._hass?.config?.time_zone||'UTC';
+ const zoomed=host._status==='ready'&&(start>host._start+1||end<host._end-1);
+ const compactName=compactPeriodName({start,end,mode,past,zoomed,hours:host._periodHours??host._config.hours_to_show,name,locale,zone});
+ const format=new Intl.DateTimeFormat(locale,{timeZone:zone,day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZoneName:'shortOffset'});
+ const range=`${format.format(start)} – ${format.format(end)}`;
+ return {picker:`<div class="period-controls"><button type="button" class="period-trigger" data-period="menu" aria-haspopup="menu" aria-controls="eleven-period-menu" aria-expanded="${host._periodMenuOpen===true}" title="${periodEscape(range)}" aria-label="${label('Timeframe','Tijdvak')}: ${periodEscape(compactName)}" aria-description="${periodEscape(range)}${zoomed?`. ${label('Zoomed in','Ingezoomd')}`:''}"><span>${periodEscape(compactName)}</span>${cardHeaderIcon('down')}</button><div class="period-menu" id="eleven-period-menu" popover="auto" role="menu" aria-label="${label('Choose a period','Kies een periode')}"><div class="chart-popup-heading"><strong>${label('Timeframe','Tijdvak')}</strong><button type="button" role="menuitem" data-period="close" aria-label="${label('Close','Sluiten')}">×</button></div><div class="period-current-range">${periodEscape(range)}${zoomed?`<span class="zoom-status">${label('Zoomed in','Ingezoomd')}</span>`:''}</div><div class="period-default">${choice(['configured',standard])}</div><div class="period-menu-columns"><div role="group" aria-label="${label('Last','Afgelopen')}"><h3>${label('Last','Afgelopen')}</h3>${rolling.map(choice).join('')}</div><div role="group" aria-label="${label('Calendar','Kalender')}"><h3>${label('Calendar','Kalender')}</h3>${calendar.map(choice).join('')}<p>${label('From the start of the period until now. Use the arrows for previous periods.','Vanaf de start van het tijdvak tot nu. Gebruik de pijlen voor vorige perioden.')}</p></div></div></div></div>`,navigation:`<button type="button" data-period="previous" title="${label('Previous period','Vorige periode')}" aria-label="${label('Previous period','Vorige periode')}">${cardHeaderIcon('previous')}</button><button type="button" data-period="now" title="${label('Return to the current period','Terug naar de huidige periode')}">${label('Now','Nu')}</button><button type="button" data-period="next" title="${label('Next period','Volgende periode')}" aria-label="${label('Next period','Volgende periode')}"${past?'':' disabled'}>${cardHeaderIcon('next')}</button>`};
+}
+function restorePeriodFocus(host,items=[]){
+ const key=host._periodFocus;if(!key)return;const root=host.shadowRoot;
+ const target=key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
+ (target?.disabled?root.querySelector('[data-period="now"], [data-zoom="in"]:not(:disabled), .history-link'):target)?.focus?.({preventScroll:true});host._periodFocus=null;
+}
+function disconnectPeriodControls(host){host._periodMenuCleanup?.();host._periodMenuCleanup=null;}
+function bindPeriodControls(host){
+ disconnectPeriodControls(host);
+ const root=host.shadowRoot,nav=root.querySelector('.period-controls');if(!nav){restorePeriodFocus(host);return;}
+ const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')],native=typeof menu.showPopover==='function';
+ const cleanups=[];
+ const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
+ host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
+ const position=()=>{
+  const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);
+  menu.style.width=`${width}px`;menu.style.maxHeight=`${Math.min(560,window.innerHeight-16)}px`;
+  const height=menu.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
+  const top=below>=height||below>=above?box.bottom+6:box.top-height-6;
+  menu.style.left=`${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
+  menu.style.top=`${Math.max(8,Math.min(top,window.innerHeight-height-8))}px`;
+ };
+ const close=(restore=false)=>{
+  host._periodMenuOpen=false;trigger.setAttribute('aria-expanded','false');
+  if(native){if(menu.matches(':popover-open'))menu.hidePopover();}else menu.removeAttribute('data-fallback-open');
+  if(restore)trigger.focus({preventScroll:true});
+ };
+ const open=(focus=true)=>{
+  closeOtherCardPopups(host,'period');
+  host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
+  if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
+  position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
+ };
+ // Remember the pointer state before native light dismissal runs on pointerup.
+ let pointerWasOpen;
+ trigger.onpointerdown=()=>{pointerWasOpen=host._periodMenuOpen;};
+ trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
+ trigger.onclick=()=>{const wasOpen=pointerWasOpen??host._periodMenuOpen;pointerWasOpen=undefined;wasOpen?close(true):open();};
+ menu.querySelector('[data-period="close"]').onclick=()=>close(true);
+ trigger.onkeydown=e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();open();if(e.key==='ArrowUp')items.at(-1).focus({preventScroll:true});}};
+ menu.addEventListener('toggle',e=>{if(host.shadowRoot.querySelector('.period-menu')!==menu)return;host._periodMenuOpen=e.newState==='open';trigger.setAttribute('aria-expanded',String(host._periodMenuOpen));});
+ for(const item of items)item.onclick=()=>{close(true);chooseGraphPeriod(host,item.dataset.periodOption);};
+ menu.onkeydown=e=>{
+  if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);return;}
+  if(e.key==='Tab'){e.preventDefault();close(true);if(!e.shiftKey)root.querySelector('.chart-controls button:not(:disabled)')?.focus();return;}
+  if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();const index=items.indexOf(host.shadowRoot.activeElement),next=e.key==='Home'?0:e.key==='End'?items.length-1:index<0?(e.key==='ArrowUp'?items.length-1:0):(index+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;items[next].focus();}
+ };
+ for(const [key,direction]of [['previous',-1],['next',1],['now',0]])root.querySelector(`[data-period="${key}"]`).onclick=()=>{close();moveGraphPeriod(host,direction);};
+ listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
+ listen(window,'scroll',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(menu))close();},true);
+ if(!native)listen(document,'pointerdown',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
+ if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
+ restorePeriodFocus(host,items);
+}
+function periodControlsStyles(){return `
+.period-controls{display:flex;min-width:0;max-width:100%}
+.header-actions .period-trigger{width:auto;max-width:100%;gap:6px;padding:4px 10px;border:0;border-radius:5px;background:var(--secondary-background-color,#eee);font-weight:400}
+.header-actions .period-trigger:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
+.period-trigger span{min-width:0;overflow-wrap:anywhere}
+.period-current-range{font-size:11px;line-height:1.5;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;margin:2px 0 10px}
+.period-current-range .zoom-status{display:table;margin-top:4px}
+.period-menu:popover-open{display:block}
+.period-menu[data-fallback-open]{display:block}
+.period-menu-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.period-menu h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--secondary-text-color,#666);margin:8px}
+.period-menu button{font:inherit;font-size:12px;color:var(--primary-text-color,#20252b);background:transparent;box-sizing:border-box;display:flex;border:1px solid transparent;border-radius:5px;cursor:pointer;height:auto;width:100%;justify-content:space-between;gap:8px;min-height:34px;border-color:transparent;text-align:start;padding:6px 8px;font-weight:400}
+.period-menu button:hover{background:var(--secondary-background-color,#eee)}
+.period-menu button:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.period-menu button[aria-checked="true"]{color:var(--primary-color,#2196f3);background:color-mix(in srgb,var(--primary-color,#2196f3) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
+.period-menu p{font-size:11px;line-height:1.5;color:var(--secondary-text-color,#666);margin:10px 8px 2px;overflow-wrap:anywhere}
+.period-default{border-bottom:1px solid var(--divider-color,#ddd);padding-bottom:8px;margin-bottom:8px}
+`;}
+
+// ../../shared/chart-insights.js
+const insightEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function chartZoomState(host){
+ const total=host._end-host._start,ready=host._status==='ready'&&Number.isFinite(total)&&total>0;
+ const a=Math.max(host._start,host._viewport?.[0]??host._start),b=Math.min(host._end,host._viewport?.[1]??host._end),width=Math.max(0,b-a);
+ const zoomed=ready&&(a>host._start+1||b<host._end-1);
+ return {zoomed,in:ready&&width>Math.min(60000,total)+1,out:ready&&width<total-1,reset:zoomed};
+}
+function chartEntityItems(host){return host._config.entities.map(id=>({id,name:host._config.series_options?.find(row=>row.entity===id)?.name||host._hass?.states?.[id]?.attributes?.friendly_name||id}));}
+function chartSeriesVisible(host,index){return host._visibility?.get(host._config.entities[index])??true;}
+function isolateChartSeries(host,id){
+ if(!host._config.entities.includes(id))return;
+ host._visibility=new Map(host._config.entities.map(entity=>[entity,entity===id]));host._hideTooltip?.();host._render();
+}
+function showAllChartSeries(host){host._visibility=new Map(host._config.entities.map(id=>[id,true]));host._hideTooltip?.();host._render();}
+function cancelChartLegendClicks(host){for(const timer of host._legendClickTimers?.values()??[])clearTimeout(timer);host._legendClickTimers?.clear();}
+function toggleChartIsolation(host,id){
+ if(!host._config.entities.includes(id))return;
+ cancelChartLegendClicks(host);
+ const only=host._config.entities.every((entity,i)=>host._isSeriesVisible(i)===(entity===id));
+ only?showAllChartSeries(host):isolateChartSeries(host,id);
+ queueMicrotask(()=>host.shadowRoot.querySelector(`[data-series="${id}"]`)?.focus({preventScroll:true}));
+}
+function bindChartLegend(host){
+ const nl=host._insightLanguage==='nl',hint=nl?'Dubbelklik of Shift+Enter: alleen deze sensor. Herhaal om alles te tonen.':'Double-click or Shift+Enter: show only this sensor. Repeat to show all.';
+ for(const button of host.shadowRoot.querySelectorAll?.('[data-series]')??[]){
+  const id=button.dataset.series;
+  if(!button.title?.includes(hint))button.title=[button.title,hint].filter(Boolean).join(' ');button.setAttribute('aria-description',hint);button.setAttribute('aria-keyshortcuts','Shift+Enter Shift+Space');
+  button.onclick=e=>{
+   clearTimeout(host._legendClickTimers?.get(id));host._legendClickTimers?.delete(id);
+   if(e.shiftKey||e.detail>1){e.preventDefault();toggleChartIsolation(host,id);return;}
+   if(!e.detail){host._toggleSeries?host._toggleSeries(id):toggleChartIsolation(host,id);return;}
+   // Keep the target alive until a second click can arrive: rendering after
+   // the first click would replace it and break native double-click detection.
+   if(host._toggleSeries){const config=host._config;host._legendClickTimers??=new Map();host._legendClickTimers.set(id,setTimeout(()=>{host._legendClickTimers.delete(id);if(host._config===config)host._toggleSeries(id);},300));}
+  };
+  button.ondblclick=e=>e.preventDefault();
+  button.onkeydown=e=>{if(e.shiftKey&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopPropagation();toggleChartIsolation(host,id);}};
+ }
+}
+function insightControl(host,key,label,body,icon=''){
+ return `<div class="insight-control"><button type="button" class="insight-trigger" data-insight="${key}" title="${insightEscape(label)}" aria-label="${insightEscape(label)}" aria-haspopup="dialog" aria-expanded="${host._insightOpen===key}" aria-controls="insight-${key}">${icon}${key==='data'?'':`<span>${insightEscape(label)}</span>`}</button><div id="insight-${key}" class="insight-popup" data-insight-panel="${key}" popover="auto" role="dialog" aria-label="${insightEscape(label)}"><div class="chart-popup-heading"><strong>${insightEscape(label)}</strong><button type="button" data-insight-close aria-label="${host._insightLanguage==='nl'?'Sluiten':'Close'}">×</button></div>${body}</div></div>`;
+}
+// Work on unstacked, undecimated values. A history value holds until the next
+// point (null breaks coverage); bars have equal weight, regardless of bin length.
+function chartValueStatistics(points,start,end,interval){
+ let minimum=Infinity,maximum=-Infinity,sum=0,weight=0,count=0,covered=0,until=start;
+ for(let i=0;i<points.length;i++){
+  const p=points[i],[a,b]=interval?interval(p,i):[p.t,points[i+1]?.t??end];
+  const left=Math.max(start,a,p.t),right=Math.min(end,b);
+  if(right<=left||!Number.isFinite(p.v))continue;
+  minimum=Math.min(minimum,p.v);maximum=Math.max(maximum,p.v);count++;
+  const w=interval?1:right-left;sum+=p.v*w;weight+=w;
+  const knownEnd=Math.min(right,points[i+1]?.t??end);
+  covered+=Math.max(0,knownEnd-Math.max(left,until));until=Math.max(until,knownEnd);
+ }
+ return {minimum:count?minimum:null,maximum:count?maximum:null,average:weight?sum/weight:null,count,missing:covered<end-start-1};
+}
+function chartDataInformation(host,language='en'){
+ const nl=language.startsWith('nl');host._insightLanguage=nl?'nl':'en';
+ const load=host._lastLoad;
+ const summary=host._status==='ready'?host._dataInformation?.():load?.summary;
+ if(load&&summary&&host._status==='ready')load.summary=summary;
+ const value=v=>{
+  if(!Number.isFinite(v))return '—';
+  const small=v!==0&&Math.abs(v)<.01,options=small?{maximumSignificantDigits:4}:{maximumFractionDigits:2};
+  if(v!==0&&Math.abs(v)<.0001)options.notation='scientific';
+  return insightEscape(new Intl.NumberFormat(language,options).format(Object.is(v,-0)?0:v));
+ };
+ let body=load?'':`<p role="status">${host._inFlight?(nl?'Laden…':'Loading…'):host._loadFailed?(nl?'Laadfout':'Load failed'):(nl?'Geen gegevens':'No data')}</p>`;
+ if(load){
+  body+=`<div class="insight-sensors">${chartEntityItems(host).map((item,i)=>{
+   const source=load.sources.find(s=>s.id===item.id),row=summary?.rows.find(r=>r.id===item.id),hidden=!host._isSeriesVisible(i);
+   const sourceLabel=source?(source.source==='statistics'?(nl?'Statistieken':'Statistics'):(nl?'Historie':'History')):(nl?'Niet geladen':'Not loaded');
+   const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
+   const metrics=row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
+   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
+   return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
+  }).join('')}</div>`;
+ }
+ return insightControl(host,'data',nl?'Gegevens':'Data information',body,cardHeaderIcon('info'));
+}
+function captureChartInsights(host){
+ const active=host.shadowRoot.activeElement;
+ host._insightFocus=null;
+ if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
+ const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
+ host._insightOpen=popup?.dataset.insightPanel??null;
+}
+function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
+function bindChartInsights(host){
+ disconnectChartInsights(host,true);
+ const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
+ const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
+ for(const control of root.querySelectorAll?.('.insight-control')??[]){
+  const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
+  const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
+  const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
+  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
+  trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
+  popup.querySelector('[data-insight-close]').onclick=()=>close(true);
+  popup.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);}};
+  popup.addEventListener('toggle',e=>{if(root.querySelector(`[data-insight-panel="${key}"]`)!==popup)return;trigger.setAttribute('aria-expanded',String(e.newState==='open'));if(e.newState==='closed'&&host._insightOpen===key)host._insightOpen=null;});
+  for(const button of popup.querySelectorAll('[data-isolate]'))button.onclick=()=>{close(true);isolateChartSeries(host,button.dataset.isolate);};
+  const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
+  listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
+  listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
+  if(!native)listen(document,'pointerdown',e=>{if(isOpen()&&!e.composedPath().includes(control))close();});
+  if(host._insightOpen===key)open(false);
+ }
+ if(host._insightFocus){const {key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
+  if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
+  else listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;}},true);
+ }
+ bindChartLegend(host);
+}
+function chartInsightStyles(){return `
+.chart-context{display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;flex:none;margin:0 0 8px;min-width:0}
+.chart-range{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;min-width:0;flex:1}
+.chart-range .period-panel{margin:0}
+.zoom-status{font-size:11px;color:var(--primary-text-color,#20252b);background:var(--secondary-background-color,#eee);border-radius:4px;padding:2px 6px;white-space:nowrap}
+.insight-control{display:inline-flex;flex:none}
+.insight-trigger{font:inherit;font-size:11px;min-height:28px;padding:3px 7px;display:flex;align-items:center;gap:5px;border:0;border-radius:5px;background:transparent;color:var(--primary-text-color,#20252b);cursor:pointer}
+.insight-trigger svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.insight-trigger:hover{background:var(--secondary-background-color,#eee)}
+.header-actions .insight-trigger{width:32px;height:32px;padding:0;background:var(--secondary-background-color,#eee);border-radius:5px}
+.header-actions .insight-trigger:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
+.header-actions .insight-trigger svg{width:18px;height:18px;stroke-width:2}
+.insight-trigger:focus-visible,.insight-popup button:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.insight-popup{z-index:21}
+.insight-popup:popover-open{display:block}
+.insight-popup[data-fallback-open]{display:block}
+.insight-popup button{display:block;box-sizing:border-box;width:auto;height:auto;padding:0;font:inherit;cursor:pointer;color:inherit;background:transparent;border:0;border-radius:5px;min-height:30px}
+.insight-popup button:disabled{opacity:.4;cursor:default}
+.insight-popup button:hover{background:var(--secondary-background-color,#eee)}
+.insight-popup p{margin:8px 0 12px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
+.insight-popup p strong{color:var(--primary-text-color,#20252b);font-weight:500}
+.insight-popup .insight-choice{display:block;width:100%;padding:6px 8px;text-align:start;overflow-wrap:anywhere}
+.insight-choice[aria-pressed="true"]{background:var(--secondary-background-color,#eee);font-weight:600}
+.insight-sensors{display:grid}
+.insight-sensor{min-width:0;padding:8px 0}
+.insight-sensor+.insight-sensor{border-top:1px solid var(--divider-color,#ddd)}
+.insight-sensor-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px}
+.insight-sensor-heading>strong{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
+.insight-source{font-size:10px;font-weight:400;color:var(--secondary-text-color,#666);color:color-mix(in srgb,var(--secondary-text-color,#666) 90%,var(--ha-card-background,var(--card-background-color,#fff)));flex:none}
+.insight-unit{white-space:nowrap}
+.insight-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin:6px 0 0}
+.insight-metrics.has-total{grid-template-columns:repeat(4,minmax(0,1fr))}
+.insight-metrics>div{min-width:0}
+.insight-metrics dt{font-size:10px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
+.insight-metrics dd{margin:1px 0 0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--primary-text-color,#20252b)}
+.insight-states{font-size:10px;color:var(--secondary-text-color,#666);margin-top:4px}
+[data-series]{touch-action:manipulation}
 `;}
 
 // src/history-utils.js
@@ -185,7 +569,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
  const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
   line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
-  line_interpolation:option.line_interpolation??config.line_interpolation??'step',
+  line_interpolation:option.line_interpolation??config.line_interpolation??'step',connect_gaps:option.connect_gaps??false,
   color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
   gradient_mode:option.gradient_mode??config.gradient_mode??'smooth',gradient_stops:option.gradient_stops??inherited,
   show_fill:option.show_fill??config.show_fill??false,fill_opacity:option.fill_opacity??config.fill_opacity??0.18,
@@ -202,7 +586,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 function editorConfig(config) {
- const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -268,7 +652,7 @@ function validateConfig(config) {
  const hours=config.hours_to_show??24;
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -285,7 +669,7 @@ function validateConfig(config) {
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
- for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','show_navigation','show_grid','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
  if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
  const stops=result.gradient_stops??[];
  if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
@@ -305,7 +689,7 @@ function validateConfig(config) {
   if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
   if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
   for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
-  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible','connect_gaps'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
   if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
   if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
   if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
@@ -328,25 +712,27 @@ function gradientColor(stops,value,mode='smooth'){
  }
  return `rgb(${color.join(',')})`;
 }
-// Statistics are hourly or calendar summaries, never exact raw readings or Delta.
-function statisticsPeriod(config){
+// Statistics are hourly/calendar summaries; counter Delta uses Recorder change.
+function statisticsPeriod(config,end=Date.now()){
  const source=config.data_source??'auto',period=config.aggregation_period??'none';
- const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method??'avg')!=='delta';
+ const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method!=='delta'||period!=='none');
  if(source==='statistics'&&!supported)throw new Error('statistics_config');
- if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48))return null;
+ if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48&&Date.now()-end<=48*3600000))return null;
  return period==='none'?'hour':period;
 }
 // HA has used epoch seconds and milliseconds across Recorder versions.
 function statisticTime(value){return typeof value==='number'?(value<1e12?value*1000:value):Date.parse(value);}
 async function loadHistorySeries(hass,config,start,end){
- const period=statisticsPeriod(config),strict=config.data_source==='statistics',selected=new Map();
+ const period=statisticsPeriod(config,end),strict=config.data_source==='statistics',selected=new Map();
  if(period){
   try{
    const metadata=await hass.callWS({type:'recorder/get_statistics_metadata',statistic_ids:config.entities});
-   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
+   const field=config.aggregation_method==='delta'?'change':config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(field==='change'?m.has_sum===true:m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
    if(strict&&ids.length!==config.entities.length)throw new Error('statistics_unavailable');
    if(ids.length){
-    const field=config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+    // Recorder change is the period's growth of sum, including HA's counter
+    // reset handling and the baseline before the first requested period.
     const response=await hass.callWS({type:'recorder/statistics_during_period',statistic_ids:ids,start_time:new Date(start).toISOString(),end_time:new Date(end).toISOString(),period,types:[field]});
     for(const id of ids){
      if(!Array.isArray(response[id])){if(strict)throw new Error('statistics_unavailable');continue;}
@@ -427,7 +813,52 @@ function graphAxes(series,meta,config,start,end,visible=series.map(()=>true)){
   }
   return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
  });
- return {axes:alignZeroAxes(axes,config,meta.items[0]?.unit),seriesAxes,plotSeries};
+ return {axes:alignGridAxes(alignZeroAxes(axes,config,meta.items[0]?.unit),config),seriesAxes,plotSeries};
+}
+// Keep the first axis (including manual bounds/step) as the grid reference.
+// Other units use their own round step, expanding their ranges to fit the same
+// tick heights. A whole-step offset keeps each scale anchored at round values.
+function alignGridAxes(axes,config={}){
+ if(axes.length<2)return axes;
+ const reference=axes[0],span=reference.max-reference.min;
+ if(!reference.ticks.length)return axes.map((axis,i)=>i?{...axis,ticks:[]}:axis);
+ const bottom=reference.min/reference.step,top=reference.max/reference.step;
+ const clean=value=>Number(value.toPrecision(15));
+ const nice=value=>{
+  const power=10**Math.floor(Math.log10(value));
+  return clean(([1,2,5,10].find(n=>n*power>=value*(1-1e-14))??10)*power);
+ };
+ const negative=axes.filter(a=>a.min<0);
+ const alignZero=config.align_zero!==false&&negative.length>1&&
+  !(reference.min<0&&(reference.max<0||(reference.max===0&&negative.some(a=>a.max>0))));
+ let zeroOffset=alignZero&&reference.min<0?0:null;
+ return axes.map((axis,i)=>{
+  if(!i)return axis;
+  let step=nice((axis.max-axis.min)*(reference.step/span));
+  const locked=alignZero&&axis.min<0?zeroOffset:null;
+  const finish=(step,offset)=>{
+   const min=clean((bottom+offset)*step),max=clean((top+offset)*step);
+   const ticks=reference.ticks.map(t=>clean((t/reference.step+offset)*step));
+   if(!Number.isFinite(min)||!Number.isFinite(max)||!(max>min)||ticks.some((t,j)=>!Number.isFinite(t)||(j&&t<=ticks[j-1])))throw new Error('y_step_count');
+   if(alignZero&&axis.min<0&&zeroOffset===null)zeroOffset=offset;
+   return {...axis,min,max,step,ticks};
+  };
+  for(let attempt=0;attempt<32;attempt++){
+   const lower=axis.max/step-top,upper=axis.min/step-bottom;
+   const epsilon=Number.EPSILON*Math.max(1,Math.abs(lower),Math.abs(upper))*8;
+   const first=Math.ceil(lower-epsilon),last=Math.floor(upper+epsilon);
+   const offset=locked??Math.max(first,Math.min(last,0));
+   if(locked!==null?offset>=lower-epsilon&&offset<=upper+epsilon:first<=last){
+    return finish(step,offset);
+   }
+   step=nice(step*(1+1e-10));
+  }
+  // A manual step can leave only an edge tick (e.g. 25–30, step 10).
+  // A secondary range crossing zero cannot fit an integer offset there.
+  // Allow shifted tick values instead of rejecting a valid configuration.
+  step=nice((axis.max-axis.min)*(reference.step/span));
+  return finish(step,Math.max(axis.max/step-top,Math.min(axis.min/step-bottom,0)));
+ });
 }
 // Expand only negative axes; never rescale readings or clip the original ranges.
 function alignZeroAxes(axes,config={},primaryUnit=axes[0]?.unit){
@@ -480,30 +911,8 @@ function yAxis(series,config={}){
  if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
  return {min,max,step,ticks};
 }
-const zoneFormats=new Map();
-function localParts(t,zone){
- let format=zoneFormats.get(zone);if(!format){format=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});zoneFormats.set(zone,format);}
- return Object.fromEntries(format.formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,Number(p.value)]));
-}
-function localEpoch(t,zone){const p=localParts(t,zone);return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);}
-function midnight(nominal,zone){
- let t=nominal;for(let i=0;i<6;i++){const next=nominal-(localEpoch(t,zone)-t);if(next===t)return t;t=next;}
- // Midnight can be skipped by a timezone transition. Find the first valid
- // instant of the requested local date rather than oscillating across it.
- let low=nominal-36*3600000,high=nominal+36*3600000;
- while(high-low>1000){const mid=Math.floor((low+high)/2000)*1000,p=localParts(mid,zone);if(Date.UTC(p.year,p.month-1,p.day)>=nominal)high=mid;else low=mid;}
- return high;
-}
-function periodBounds(t,period,zone='UTC'){
- zone ||= 'UTC';const p=localParts(t,zone),size={minute:60000,quarter_hour:900000,hour:3600000}[period];
- if(size){const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second),a=t-(local%size)-(t%1000);return [a,a+size];}
- let nominal=Date.UTC(p.year,p.month-1,period==='month'?1:p.day);let next;
- if(period==='week'){const day=new Date(nominal).getUTCDay();nominal-=((day+6)%7)*86400000;next=nominal+7*86400000;}
- else if(period==='month')next=Date.UTC(p.year,p.month,1);
- else next=nominal+86400000;
- return [midnight(nominal,zone),midnight(next,zone)];
-}
-function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
+function periodBounds(t,period,zone='UTC'){return graphPeriodBounds(t,period,zone);}
+function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC',{preserveGaps=true}={}){
  if(period==='none')return series;
  const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
  return series.map(s=>{if(s.source==='statistics')return s;const points=[];let index=0;
@@ -520,10 +929,18 @@ function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC')
    const fragments=[{t:a,valid:value!==null}];
    while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
    const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
-   for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
+   if(preserveGaps)for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
+   else points.push({t:a,v:aggregate});
   }
   return {id:s.id,points};
  });
+}
+// Drawing only: bridge internal gaps, retaining unknown starts and tails.
+// Run before viewport clipping so a zoom entirely inside a gap keeps both anchors.
+function connectGapPoints(points){
+ const first=points.findIndex(p=>p.v!==null);if(first<0)return points;
+ let last=points.length-1;while(last>first&&points[last].v===null)last--;
+ return points.filter((p,i)=>p.v!==null||i<first||i>last);
 }
 function displayPoints(points,start,end,bins=1500){
  let first=0,last=points.length;while(first<last){const mid=(first+last)>>1;if(points[mid].t<start)first=mid+1;else last=mid;}
@@ -556,10 +973,14 @@ const translations={
  title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. Each different unit gets its own Y-axis.','Historische periode: 1–8760 uur. Iedere verschillende eenheid krijgt een eigen Y-as.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
 Object.assign(translations,{
  show_title:['Show title','Titel tonen'],
+ show_navigation:['Show timeframe selection','Tijdvakselectie tonen'],
+ show_grid:['Show grid','Grid tonen'],
+ show_gridHelper:['Show horizontal Y-axis grid lines and the left and right plot boundaries. Axis labels and data remain visible.','Toon horizontale Y-aslijnen en de linker- en rechterrand van de grafiek. Aslabels en gegevens blijven zichtbaar.'],
+ show_navigationHelper:['Show the timeframe menu, previous/next, Now and the selected date range. The configured hours remain the default; aggregation is unchanged.','Toon het tijdvakmenu, vorige/volgende, Nu en het gekozen datumbereik. De ingestelde uren blijven de standaard; aggregatie verandert niet.'],
  data_source:['Data source','Gegevensbron'],auto:['Automatic','Automatisch'],history:['Raw history','Ruwe historie'],statistics:['Statistics','Statistics'],
- data_sourceHelper:['Automatic: statistics beyond 48 hours, raw history otherwise. Unsupported sensors fall back to history. Statistics use hour/day/week/month summaries (None uses hour); minute, quarter-hour and Delta require history.','Automatisch: statistics boven 48 uur, anders ruwe historie. Sensoren zonder ondersteuning vallen terug op historie. Statistics gebruikt uur/dag/week/maand (Geen gebruikt uur); minuut, kwartier en Delta vereisen historie.'],
- statistics_config:['Statistics requires hour, day, week or month (None uses hour), and minimum, maximum or average. Choose History for minute, quarter-hour or Delta.','Statistics vereist uur, dag, week of maand (Geen gebruikt uur), met minimum, maximum of gemiddelde. Kies Historie voor minuut, kwartier of Delta.'],
- statistics_unavailable:['Statistics unavailable for a selected sensor or its unit. Choose Automatic or History.','Statistics ontbreekt voor een gekozen sensor of zijn eenheid. Kies Automatisch of Historie.'],
+ data_sourceHelper:['Automatic: statistics for ranges longer than 48 hours or ending more than 48 hours ago; raw history otherwise. Unsupported sensors fall back to history. Statistics use hour/day/week/month summaries (None uses hour). Delta uses counter change statistics, including counter resets. Minute and quarter-hour require history.','Automatisch: statistics bij periodes langer dan 48 uur of die meer dan 48 uur geleden eindigen; anders ruwe historie. Sensoren zonder ondersteuning vallen terug op historie. Statistics gebruikt uur/dag/week/maand (Geen gebruikt uur). Delta gebruikt tellerstatistieken, inclusief tellerresets. Minuut en kwartier vereisen historie.'],
+ statistics_config:['Statistics requires hour, day, week or month. None uses hour for minimum, maximum or average; Delta requires an explicit period. Choose History for minute or quarter-hour.','Statistics vereist uur, dag, week of maand. Geen gebruikt uur bij minimum, maximum of gemiddelde; Delta vereist een expliciet tijdvak. Kies Historie voor minuut of kwartier.'],
+ statistics_unavailable:['Statistics unavailable for a selected sensor or its unit. Delta requires counter statistics; minimum, maximum and average require measurement statistics. Choose Automatic or History.','Statistics ontbreekt voor een gekozen sensor of zijn eenheid. Delta vereist tellerstatistieken; minimum, maximum en gemiddelde vereisen meetstatistieken. Kies Automatisch of Historie.'],
  zoom:['Zoom','Zoom'],zoom_in:['Zoom in','Inzoomen'],zoom_out:['Zoom out','Uitzoomen'],zoom_reset:['Reset zoom','Zoom herstellen'],
  aggregation_period:['Aggregation period','Aggregatieperiode'],aggregation_method:['Aggregation method','Aggregatiemethode'],none:['None (raw history)','Geen (ruwe historie)'],minute:['Minute','Minuut'],quarter_hour:['Quarter hour','Kwartier'],hour:['Hour','Uur'],day:['Day','Dag'],week:['Week (Monday)','Week (maandag)'],month:['Month','Maand'],min:['Minimum','Minimum'],max:['Maximum','Maximum'],avg:['Time-weighted average','Tijdgewogen gemiddelde'],
  aggregation_periodHelper:['Applied separately to every sensor in the Home Assistant timezone. Zoom does not change it.','Per sensor toegepast in de Home Assistant-tijdzone. Zoom verandert dit niet.'],
@@ -571,7 +992,9 @@ Object.assign(translations,{
  sync_hoverHelper:['Shares the selected time with other Eleven graphs on this page.','Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.'],
  hover_sync_groupHelper:['Cards with the same group follow each other. Empty uses the default group.','Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'],
  line_interpolation:['Line interpolation','Lijnverloop'],interpolation_smooth:['Smooth','Vloeiend'],interpolation_linear:['Linear','Recht'],interpolation_step:['Stepped','Trapvormig'],
- line_interpolationHelper:['Display only: connects recorded points. Unavailable gaps remain gaps.','Alleen weergave: verbindt geregistreerde punten. Niet-beschikbare waarden blijven gaten.'],
+ line_interpolationHelper:['Display only: chooses how recorded points are connected.','Alleen weergave: bepaalt hoe geregistreerde punten worden verbonden.'],
+ connect_gaps:['Bridge missing data','Ontbrekende data overbruggen'],
+ connect_gapsHelper:['Connect known points on either side of a gap using this line’s interpolation. Unknown starts and tails stay empty. Tooltips and calculations retain missing data.','Verbind bekende punten aan weerszijden van een gat volgens het lijnverloop. Ontbrekende data aan het begin en einde blijft leeg. Tooltips en berekeningen behouden ontbrekende waarden.'],
  y_step_error:['Invalid Y-axis step: enter a finite positive number or leave it empty for automatic steps.','Ongeldige stapgrootte Y-as: voer een eindig positief getal in of laat leeg voor automatische stappen.'],
  y_step_count:['Y-axis step cannot be drawn (maximum 200 ticks or numeric precision exceeded). Increase the step or narrow the Y-axis bounds.','Stapgrootte Y-as kan niet worden getekend (maximaal 200 maatstreepjes of numerieke precisie overschreden). Vergroot de stap of verklein het Y-asbereik.'],
  align_zero:['Align zero points','Nulpunten uitlijnen'],
@@ -738,6 +1161,8 @@ class HistoryGraphCard extends HTMLElement {
    {type:'expandable',name:'graph_settings',get title(){return label('graph_settings');},flatten:true,schema:[
     {name:'graph_mode',default:'lines',selector:select(['lines','stacked'])},
     {name:'show_legend',default:true,selector:{boolean:{}}},
+    {name:'show_navigation',default:true,selector:{boolean:{}}},
+    {name:'show_grid',default:true,selector:{boolean:{}}},
     {name:'show_hover_line',default:true,selector:{boolean:{}}},
     {name:'sync_hover',default:true,selector:{boolean:{}}},
     {name:'hover_sync_group',selector:{text:{}}}
@@ -772,6 +1197,7 @@ class HistoryGraphCard extends HTMLElement {
      {name:'line_style',required:true,selector:select(['solid','dashed','dotted'])},
      {name:'line_interpolation',required:true,default:'step',selector:select(['smooth','linear','step'],'interpolation_')}
     ]:[]),
+    {name:'connect_gaps',default:false,selector:{boolean:{}}},
     {name:'color_mode',required:true,selector:select(['fixed','gradient'],'color_')},
     ...(row.color_mode==='gradient'?[
      {name:'gradient_mode',required:true,selector:select(['smooth','steps'])},
@@ -838,9 +1264,10 @@ class HistoryGraphCard extends HTMLElement {
  setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message==='y_step'?'y_step_error':error.message==='y_step_count'?'y_step_count':error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}
   const previous=this._config,visibility=this._visibility;
   this._visibility=new Map(validated.entities.map(id=>{const initial=validated.series_options.find(s=>s.entity===id)?.visible??true,old=previous?.series_options.find(s=>s.entity===id)?.visible??true;return [id,initial===old&&visibility?.has(id)?visibility.get(id):initial];}));
-  SharedGraph.clearHover(this);this._config=validated;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
+  SharedGraph.clearHover(this);this._config=validated;this._lastLoad=null;this._loadFailed=false;this._insightOpen=null;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;resetGraphPeriod(this);this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(hass){this._hass=hass;if(!this._config)return;let signature;try{const meta=seriesMetadata(hass,this._config.entities);signature=JSON.stringify([meta,language(hass),hass.config?.time_zone]);}catch(e){signature=e.message;}
   if(signature!==this._signature){this._signature=signature;this._render();}
+  this._updateGraphTheme();
   if(this._connected&&!this._started)this._refresh();
  }
  get hass(){return this._hass;}
@@ -855,11 +1282,11 @@ class HistoryGraphCard extends HTMLElement {
   if(this._connected){this._elfTimer=setTimeout(()=>this._syncElf(),Math.min(60000-now%60000,this._elfPreviewUntil>now?this._elfPreviewUntil-now:60000));this._elfTimer.unref?.();}
  }
  connectedCallback(){this._connected=true;SharedGraph.connectHover(this,t=>this._receiveHover(t));this._elfPreview??=()=>{this._elfPreviewUntil=Date.now()+ELF_FLIGHT_MS;this.shadowRoot.querySelector('.eleven-elf')?.remove();this._syncElf();};registerElfPreview(this._elfPreview);document.addEventListener('pointerdown',this._outside);this._syncElf();if(this._config&&this._hass)this._refresh();}
- disconnectedCallback(){SharedGraph.disconnectHover(this);this._connected=false;unregisterElfPreview(this._elfPreview);this._elfPreviewUntil=0;this._generation++;this._inFlight=false;this._started=false;clearTimeout(this._timer);this._timer=null;clearTimeout(this._elfTimer);this._elfTimer=null;document.removeEventListener('pointerdown',this._outside);}
+ disconnectedCallback(){disconnectChartInsights(this);disconnectPeriodControls(this);SharedGraph.disconnectHover(this);this._connected=false;unregisterElfPreview(this._elfPreview);this._elfPreviewUntil=0;this._generation++;this._inFlight=false;this._started=false;clearTimeout(this._timer);this._timer=null;clearTimeout(this._elfTimer);this._elfTimer=null;document.removeEventListener('pointerdown',this._outside);}
  async _refresh(){
   if(!this._connected||!this._config||!this._hass||this._inFlight)return;
   clearTimeout(this._timer);this._timer=null;const generation=++this._generation;this._inFlight=true;this._started=true;
-  const config=this._config,hass=this._hass;const end=Date.now(),start=end-config.hours_to_show*3600000;
+  const {start,end}=graphPeriodRange(this);const config={...this._config,hours_to_show:(end-start)/3600000},hass=this._hass;
   this._status='loading';this._render();let timeout;
   try{
    seriesMetadata(hass,config.entities);
@@ -867,20 +1294,28 @@ class HistoryGraphCard extends HTMLElement {
    if(generation!==this._generation||!this._connected)return;
    seriesMetadata(this._hass,config.entities);
    this._series=response;this._rawSeries=this._series;this._start=start;this._end=end;
+   this._loadFailed=false;this._lastLoad={at:Date.now(),start,end,sources:response.map(s=>({id:s.id,source:s.source??'history',empty:!s.points.some(p=>p.v!==null)}))};
    this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';
-  }catch(e){if(generation!==this._generation||!this._connected)return;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
+  }catch(e){if(generation!==this._generation||!this._connected)return;this._loadFailed=true;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
   finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),REFRESH_MS);this._timer.unref?.();}}
  }
  _getGraphAxes(series,meta,visible){return graphAxes(series,meta,this._config,this._start,this._end,visible);}
+ _aggregateSeries(){return aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);}
+ _displayPoints(points,index=0){return displayPoints(this._seriesAppearance(index).connect_gaps?connectGapPoints(points):points,this._viewStart,this._viewEnd);}
+ _dataInformation(){
+  const start=this._viewStart,end=this._viewEnd;
+  return {start,end,rows:this._series.map((s,i)=>({...this._meta.items[i],...chartValueStatistics(s.points,start,end)}))};
+ }
+ _defaultTitle(lang){return text('title',lang);}
  _render(){
-  if(!this._config)return;const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
+  if(!this._config)return;captureChartInsights(this);const lang=language(this._hass);this._lang=lang;this._zone=this._hass?.config?.time_zone;
   let meta;try{meta=seriesMetadata(this._hass??{},this._config.entities,this._config.series_options);}catch(e){if(this._hass)this._status=e.message;}
-  const title=this._config.title??text('title',lang);let content='';
+  const title=this._config.title??this._defaultTitle(lang);let content='';
   if(this._status!=='ready'||!meta){content=`<div class="state" role="status">${escapeHtml(text(this._status,lang))}${['error','unit','missing','statistics_config','statistics_unavailable'].includes(this._status)?`<button class="retry">${text('retry',lang)}</button>`:''}</div>`;}
   else{
    this._rawSeries??=this._series;
    const key=JSON.stringify([this._start,this._end,this._zone,this._config.aggregation_period,this._config.aggregation_method]);
-   if(this._processedRaw!==this._rawSeries||this._processedKey!==key){this._series=aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);this._processedRaw=this._rawSeries;this._processedKey=key;}
+   if(this._processedRaw!==this._rawSeries||this._processedKey!==key){this._series=this._aggregateSeries();this._processedRaw=this._rawSeries;this._processedKey=key;}
    const visible=this._config.entities.map((_,i)=>this._isSeriesVisible(i)),anyVisible=visible.some(Boolean);
    const axisKey=JSON.stringify([meta.items.map(item=>item.unit),this._config.graph_mode,this._config.y_min,this._config.y_max,this._config.y_step,this._config.align_zero,visible]);
    let grouped;try{if(this._axisSource!==this._series||this._axisKey!==axisKey){this._axisGroups=this._getGraphAxes(this._series,meta,visible);this._axisSource=this._series;this._axisKey=axisKey;}grouped=this._axisGroups;}catch(error){if(!['y_step','y_step_count'].includes(error.message))throw error;this._status=error.message==='y_step'?'y_step_error':error.message;this._range=null;this._render();return;}
@@ -897,27 +1332,48 @@ class HistoryGraphCard extends HTMLElement {
    }).join('');
    const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
 
-   const display=this._plotSeries.map(s=>({...s,points:displayPoints(s.points,this._viewStart,this._viewEnd)}));
+   const display=this._plotSeries.map((s,i)=>({...s,points:this._displayPoints(s.points,i)}));
    const seriesY=i=>{const a=this._axes[this._seriesAxes[i]];return v=>(a.max-v)/(a.max-a.min)*300;};
    this._graph??=new SharedGraph();
    const graph=this._graph.render(this,{
     viewBox:'0 0 1000 300',defs:this._gradient(min,max,y),
+    before:this._config.show_grid!==false?`<g class="y-grid">${this._axes[0].ticks.map((value,index)=>`<line class="grid-line${this._axes.some(a=>a.ticks[index]===0)?' grid-zero':''}" x1="0" x2="1000" y1="${y(value)}" y2="${y(value)}"/>`).join('')}</g><g class="grid-edges"><line class="grid-line grid-edge" x1="0" x2="0" y1="0" y2="300"/><line class="grid-line grid-edge" x1="1000" x2="1000" y1="0" y2="300"/></g>`:'',
     fills:display.flatMap((s,i)=>{const a=this._seriesAppearance(i);if(!visible[i]||!a.show_fill)return [];const fillColor=Array.isArray(a.fill_color)?`rgb(${a.fill_color.join(',')})`:a.fill_color;return [{d:this._area(s.points,x,seriesY(i),i),className:'series-fill',fill:a.fill_mode==='own'?fillColor:this._appearance(i).stroke,opacity:a.fill_opacity,mask:a.fill_fade?'url(#history-fill-fade)':null}];}),
     lines:display.flatMap((s,i)=>visible[i]?[{d:this._line(s.points,Math.max(this._viewEnd,s.points.at(-1)?.t??this._viewEnd),x,seriesY(i),i),className:'series-line',entity:s.id,appearance:this._appearance(i)}]:[]),
    });
-   const legend=meta.items.map((item,i)=>{const value=valueAt(this._series[i].points,this._end);const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
+   // Statistics bins end exclusively; sample inside the requested range rather
+   // than its closing null sentinel. A real gap before the end remains null.
+   const legend=meta.items.map((item,i)=>{const s=this._series[i],value=valueAt(s.points,this._end-(s.source==='statistics'?1:0));const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
    const missing=meta.items.filter((_,i)=>visible[i]&&!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
    content=`${this._config.show_legend?`<div class="legend">${legend}${mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`}</div>`:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
   }
-  const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang});
+  const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang,periods:periodControls(this,lang),zoomState:chartZoomState(this),information:chartDataInformation(this,lang)});
   this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${controls}${content}</div></ha-card>`;
-  this.shadowRoot.querySelectorAll?.('[data-series]').forEach(button=>button.onclick=()=>this._toggleSeries(button.dataset.series));
+  this._updateGraphTheme();bindPeriodControls(this);bindChartInsights(this);
   this.shadowRoot.querySelectorAll?.('[data-zoom]').forEach(button=>button.onclick=()=>this._zoom({in:0.5,out:2,reset:0}[button.dataset.zoom]));
   this._graph?.restore(this);
   const retry=this.shadowRoot.querySelector('.retry');if(retry)retry.onclick=()=>this._refresh();this._pinned=false;this._bindInteractions();
   this._syncElf();SharedGraph.restoreHover(this);
  }
- _historyUrl(){const end=this._viewport?.[1]??this._end??Date.now(),start=this._viewport?.[0]??this._start??end-this._config.hours_to_show*3600000;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
+ _updateGraphTheme(){
+  const card=this.shadowRoot.querySelector('ha-card');
+  if(!card?.style||!globalThis.getComputedStyle)return;
+  // Use the actual card surface, including per-card background overrides.
+  const background=getComputedStyle(card).backgroundColor;
+  let dark=this._hass?.themes?.darkMode??false;
+  const rgba=background.match(/^rgba?\(([^)]+)\)$/)?.[1].split(/[,\s/]+/).map(Number);
+  if(rgba?.length>=3&&(rgba[3]??1)>0){
+   const channels=rgba.slice(0,3).map(v=>{const c=v/255;return c<=0.04045?c/12.92:((c+0.055)/1.055)**2.4;});
+   dark=channels[0]*.2126+channels[1]*.7152+channels[2]*.0722<.179;
+  }
+  card.style.setProperty('--history-value-color',dark?'#f3f4f6':'#111111');
+  card.style.setProperty('--history-grid-color',dark?'#3a3b45':'#e1e3e8');
+  card.style.setProperty('--history-grid-zero-color',dark?'#626571':'#b8bbc4');
+ }
+ _historyUrl(){const range=graphPeriodRange(this),ready=this._status==='ready';const end=this._viewport?.[1]??(ready?this._end:range.end)??range.end,start=this._viewport?.[0]??(ready?this._start:range.start)??range.start;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
+ _setPeriod(hours){return chooseGraphPeriod(this,String(hours));}
+ _navigate(direction){return moveGraphPeriod(this,direction);}
+ _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._render();return this._refresh();}
  _zoom(factor){
   this._hideTooltip();if(!factor)this._viewport=null;
   else{const a=this._viewStart??this._start,b=this._viewEnd??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2;
@@ -928,8 +1384,8 @@ class HistoryGraphCard extends HTMLElement {
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
   const fromPointer=e=>{const box=chart.querySelector('.plot').getBoundingClientRect();return (this._viewStart??this._start)+Math.max(0,Math.min(1,(e.clientX-box.left)/box.width))*((this._viewEnd??this._end)-(this._viewStart??this._start));};
   let drag=null;const selection=chart.querySelector('.zoom-selection');
-  chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){const plot=chart.querySelector('.plot').getBoundingClientRect();if(selection){selection.hidden=false;selection.style.left=`${Math.max(0,Math.min(drag.x,e.clientX)-plot.left)/plot.width*100}%`;selection.style.width=`${Math.min(plot.width,Math.abs(e.clientX-drag.x))/plot.width*100}%`;}}else if(!this._pinned&&!e.target?.closest?.('.tooltip'))this._showTooltip(fromPointer(e));};
-  chart.onpointerdown=e=>{if(e.target?.closest?.('.tooltip'))return;this._pinned=true;this._showTooltip(fromPointer(e));if(e.pointerType==='mouse'&&(e.button??0)===0){drag={x:e.clientX,t:fromPointer(e)};chart.setPointerCapture?.(e.pointerId);}};
+  chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){const plot=chart.querySelector('.plot').getBoundingClientRect();if(selection){selection.hidden=false;selection.style.left=`${Math.max(0,Math.min(drag.x,e.clientX)-plot.left)/plot.width*100}%`;selection.style.width=`${Math.min(plot.width,Math.abs(e.clientX-drag.x))/plot.width*100}%`;}}else if(!this._pinned&&!e.target?.closest?.('.tooltip'))this._showTooltip(this._pointerTime(fromPointer(e)));};
+  chart.onpointerdown=e=>{if(e.target?.closest?.('.tooltip'))return;this._pinned=true;this._showTooltip(this._pointerTime(fromPointer(e)));if(e.pointerType==='mouse'&&(e.button??0)===0){drag={x:e.clientX,t:fromPointer(e)};chart.setPointerCapture?.(e.pointerId);}};
   chart.onpointerup=e=>{if(selection)selection.hidden=true;if(drag){const first=drag;drag=null;if(Math.abs(e.clientX-first.x)>=6){const last=fromPointer(e),a=Math.min(first.t,last),b=Math.max(first.t,last);if(b-a>=60000){this._hideTooltip();this._viewport=[a,b];this._render();}}}};
   chart.onpointercancel=()=>{drag=null;if(selection)selection.hidden=true;};
   chart.onpointerleave=()=>{if(!this._pinned)this._hideTooltip();};chart.onblur=()=>this._hideTooltip();
@@ -943,18 +1399,20 @@ class HistoryGraphCard extends HTMLElement {
    this._pinned=true;this._showTooltip(timeline[index]);
   };
  }
+ _pointerTime(timestamp){return timestamp;}
  _receiveHover(timestamp){if(timestamp===null||timestamp<(this._viewStart??this._start)||timestamp>(this._viewEnd??this._end)){this._hideTooltip(false);return;}this._showTooltip(timestamp,false);}
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._cursor=null;this._pinned=false;const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;const tooltip=chart.querySelector('.tooltip');if(tooltip)tooltip.hidden=true;const markers=chart.querySelector('.markers');if(markers)markers.innerHTML='';const guide=chart.querySelector('.guide');if(guide)guide.hidden=true;}
  _showTooltip(timestamp,publish=true){
+  this._updateGraphTheme();
   if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;this._cursor=timestamp;
   const tooltip=chart.querySelector('.tooltip'),plot=chart.querySelector('.plot');const box=chart.getBoundingClientRect(),p=plot.getBoundingClientRect();
   const px=p.left-box.left+(timestamp-(this._viewStart??this._start))/((this._viewEnd??this._end)-(this._viewStart??this._start))*p.width;
   const positions=[];
-  const rows=this._series.flatMap((s,i)=>{if(!this._isSeriesVisible(i))return [];const {min,max}=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return [`${this._meta.items[i].name}: ${value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.items[i].unit??this._meta.unit}`}`];});
+  const rows=this._series.flatMap((s,i)=>{if(!this._isSeriesVisible(i))return [];const {min,max}=this._axes?.[this._seriesAxes[i]]??{min:this._range[0],max:this._range[1]};const value=valueAt(s.points,timestamp),height=valueAt((this._plotSeries??this._series)[i].points,timestamp);if(height!==null&&height>=min&&height<=max)positions.push({x:px,y:p.top-box.top+(max-height)/(max-min)*p.height,color:this._appearance(i,value).color});return [{name:this._meta.items[i].name,value:value===null?text('unavailable',this._lang):`${number(value,this._lang)} ${this._meta.items[i].unit??this._meta.unit}`}];});
   if(!rows.length){this._hideTooltip(publish);return;}
   const colors=this._series.flatMap((s,i)=>this._isSeriesVisible(i)?[this._appearance(i,valueAt(s.points,timestamp)).color]:[]);
-  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map((row,i)=>`<span><i style="background:${escapeHtml(colors[i])}"></i><b>${escapeHtml(row)}</b></span>`).join('')}`;tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';
+  tooltip.innerHTML=`<strong>${escapeHtml(time(timestamp,this._lang,this._zone,true))}</strong>${rows.map((row,i)=>`<span><i style="background:${escapeHtml(colors[i])}"></i><b class="tooltip-label">${escapeHtml(row.name)}: <em class="tooltip-value">${escapeHtml(row.value)}</em></b></span>`).join('')}`;tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';
   tooltip.style.maxHeight=`${Math.max(0,box.height-8)}px`;
   const measured=tooltip.getBoundingClientRect();let left=Math.max(4,Math.min(box.width-measured.width-4,px+14));
   if(px+14+measured.width>box.width-4)left=Math.max(4,px-measured.width-14);
@@ -963,7 +1421,7 @@ class HistoryGraphCard extends HTMLElement {
   const top=candidates.sort((a,b)=>overlaps(a)-overlaps(b))[0];tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;
   chart.querySelector('.markers').innerHTML=positions.map(m=>`<i class="hover-dot" style="left:${m.x}px;top:${m.y}px;border-color:${m.color}"></i>`).join('');
   const guide=chart.querySelector('.guide');if(guide){guide.hidden=false;guide.style.left=`${px}px`;}
-  chart.querySelector('.sr-only').textContent=`${time(timestamp,this._lang,this._zone,true)}. ${rows.join('. ')}`;
+  chart.querySelector('.sr-only').textContent=`${time(timestamp,this._lang,this._zone,true)}. ${rows.map(row=>`${row.name}: ${row.value}`).join('. ')}`;
   if(publish)SharedGraph.publishHover(this,timestamp);
  }
  _styles(){return `
@@ -971,6 +1429,8 @@ class HistoryGraphCard extends HTMLElement {
  ha-card{height:100%;display:flex;flex-direction:column;background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,inherit)}
  .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;padding:16px 16px 12px;line-height:1.4}
  ${cardHeaderStyles()}
+ ${periodControlsStyles()}
+ ${chartInsightStyles()}
  .legend{display:flex;flex-wrap:wrap;align-items:center;gap:7px 16px;margin:0 0 2px;color:var(--secondary-text-color);font-size:var(--font-size-label)}
  .legend-item{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;border:0;padding:4px 0;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer;border-radius:4px}.legend-item[aria-pressed="false"]{opacity:.45}.legend-item[aria-pressed="false"]>span{text-decoration:line-through}.legend-item:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.legend-item>span{overflow-wrap:anywhere}.legend-item strong{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}.empty-visibility{position:absolute;inset:22px 12px 30px 44px;display:flex;align-items:center;justify-content:center;color:var(--secondary-text-color);font-size:12px;text-align:center;pointer-events:none}
  .legend i{width:15px;flex-shrink:0;border-top:3px solid var(--series-color)}.unit{margin-left:auto;font-weight:600}
@@ -981,6 +1441,9 @@ class HistoryGraphCard extends HTMLElement {
  .axis-y,.axis-x{position:absolute;color:var(--secondary-text-color);font-size:11px;line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}.axis-y{left:0;transform:translateY(-50%);max-width:40px;overflow:hidden;text-overflow:ellipsis}.axis-x{bottom:4px;transform:translateX(-50%)}.axis-x:last-of-type{transform:translateX(-100%)}
  .axis-unit{position:absolute;left:0;top:2px;max-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color);font-size:10px;font-weight:600}
  ${SharedGraph.tooltipStyles()}
+ .legend-item strong,.tooltip .tooltip-value{color:var(--history-value-color,var(--primary-text-color));font-style:normal}
+ .tooltip .tooltip-label{color:var(--secondary-text-color)}
+ .grid-line{stroke:var(--history-grid-color,var(--divider-color));stroke-width:.8;vector-effect:non-scaling-stroke;pointer-events:none}.grid-zero{stroke:var(--history-grid-zero-color,var(--divider-color));stroke-width:1.2}
  .state{display:flex;flex:1;height:260px;flex-direction:column;justify-content:center;align-items:flex-start;gap:8px;min-height:120px;font-size:14px;color:var(--secondary-text-color)}.retry{font:inherit;border:1px solid var(--divider-color);border-radius:6px;background:var(--secondary-background-color);color:var(--primary-text-color);min-height:44px;padding:0 12px;cursor:pointer}
  .guide{position:absolute;top:22px;bottom:30px;border-left:1px dashed var(--secondary-text-color);pointer-events:none}.guide[hidden]{display:none}
  .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none}.zoom-selection[hidden]{display:none}

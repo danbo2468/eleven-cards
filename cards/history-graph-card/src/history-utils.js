@@ -1,3 +1,4 @@
+import {graphPeriodBounds} from '../../../shared/periods.js';
 function validColor(color){return typeof color==='string'?/^#[\da-f]{6}$/i.test(color):Array.isArray(color)&&color.length===3&&color.every(v=>Number.isInteger(v)&&v>=0&&v<=255);}
 export const SERIES_COLORS=['#2196f3','#e78a14','#ab70d9','#26a69a','#e66b91','#718cc2','#a18d3a','#718d78'];
 const APPEARANCE_KEYS=['line_width','line_style','line_interpolation','line_color','show_fill','fill_color','fill_opacity','fill_fade','gradient_mode','gradient_stops'];
@@ -11,7 +12,7 @@ export function seriesAppearance(config,index,seen=new Set()) {
  const color_mode=option.color_mode??(inherited.length?'gradient':'fixed');
  const row={entity:config.entities[index],visible:option.visible??true,...(option.name?{name:option.name}:{}),
   line_width:option.line_width??config.line_width??3.5,line_style:option.line_style??config.line_style??(index%2?'dashed':'solid'),
-  line_interpolation:option.line_interpolation??config.line_interpolation??'step',
+  line_interpolation:option.line_interpolation??config.line_interpolation??'step',connect_gaps:option.connect_gaps??false,
   color_mode,color:option.color||config.line_color||SERIES_COLORS[index%SERIES_COLORS.length],
   gradient_mode:option.gradient_mode??config.gradient_mode??'smooth',gradient_stops:option.gradient_stops??inherited,
   show_fill:option.show_fill??config.show_fill??false,fill_opacity:option.fill_opacity??config.fill_opacity??0.18,
@@ -28,7 +29,7 @@ export function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 export function editorConfig(config) {
- const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -94,7 +95,7 @@ export function validateConfig(config) {
  const hours=config.hours_to_show??24;
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
- const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -111,7 +112,7 @@ export function validateConfig(config) {
  if(!Number.isFinite(result.line_width)||result.line_width<1||result.line_width>8) throw new Error('line_width');
  if(result.line_style!=null&&!['solid','dashed','dotted'].includes(result.line_style)) throw new Error('line_style');
  for(const key of ['line_color','fill_color']) if(result[key]!=null&&result[key]!==''&&!validColor(result[key])) throw new Error(key);
- for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
+ for(const key of ['show_fill','fill_fade','show_hover_line','show_legend','show_navigation','show_grid','align_zero']) if(typeof result[key]!=='boolean') throw new Error(key);
  if(!Number.isFinite(result.fill_opacity)||result.fill_opacity<0||result.fill_opacity>1) throw new Error('fill_opacity');
  const stops=result.gradient_stops??[];
  if(!Array.isArray(stops)||(stops.length!==0&&stops.length<2)||stops.length>32||stops.some(s=>!s||!Number.isFinite(s.value)||!validColor(s.color))||new Set(stops.map(s=>s.value)).size!==stops.length) throw new Error('gradient_stops');
@@ -131,7 +132,7 @@ export function validateConfig(config) {
   if(s.line_style_source!=null&&s.line_style_source!==''&&(typeof s.line_style_source!=='string'||!entities.includes(s.line_style_source)||s.line_style_source===s.entity))throw new Error('line_style_source');
   if(s.line_width!=null&&(!Number.isFinite(s.line_width)||s.line_width<1||s.line_width>8))throw new Error('series_line_width');
   for(const [key,allowed] of Object.entries({line_style:['solid','dashed','dotted'],line_interpolation:['smooth','linear','step'],color_mode:['fixed','gradient'],fill_mode:['line','own']}))if(s[key]!=null&&!allowed.includes(s[key]))throw new Error('series_'+key);
-  for(const key of ['show_fill','fill_fade','visible'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
+  for(const key of ['show_fill','fill_fade','visible','connect_gaps'])if(s[key]!=null&&typeof s[key]!=='boolean')throw new Error('series_'+key);
   if(s.fill_opacity!=null&&(!Number.isFinite(s.fill_opacity)||s.fill_opacity<0||s.fill_opacity>1))throw new Error('series_fill_opacity');
   if(s.fill_color!=null&&s.fill_color!==''&&!validColor(s.fill_color))throw new Error('series_fill_color');
   if(s.color_mode==='gradient'&&(!Array.isArray(s.gradient_stops)||s.gradient_stops.length<2))throw new Error('series_gradient_stops');
@@ -154,25 +155,27 @@ export function gradientColor(stops,value,mode='smooth'){
  }
  return `rgb(${color.join(',')})`;
 }
-// Statistics are hourly or calendar summaries, never exact raw readings or Delta.
-export function statisticsPeriod(config){
+// Statistics are hourly/calendar summaries; counter Delta uses Recorder change.
+export function statisticsPeriod(config,end=Date.now()){
  const source=config.data_source??'auto',period=config.aggregation_period??'none';
- const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method??'avg')!=='delta';
+ const supported=['none','hour','day','week','month'].includes(period)&&(config.aggregation_method!=='delta'||period!=='none');
  if(source==='statistics'&&!supported)throw new Error('statistics_config');
- if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48))return null;
+ if(source==='history'||!supported||(source==='auto'&&config.hours_to_show<=48&&Date.now()-end<=48*3600000))return null;
  return period==='none'?'hour':period;
 }
 // HA has used epoch seconds and milliseconds across Recorder versions.
 function statisticTime(value){return typeof value==='number'?(value<1e12?value*1000:value):Date.parse(value);}
 export async function loadHistorySeries(hass,config,start,end){
- const period=statisticsPeriod(config),strict=config.data_source==='statistics',selected=new Map();
+ const period=statisticsPeriod(config,end),strict=config.data_source==='statistics',selected=new Map();
  if(period){
   try{
    const metadata=await hass.callWS({type:'recorder/get_statistics_metadata',statistic_ids:config.entities});
-   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
+   const field=config.aggregation_method==='delta'?'change':config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+   const ids=config.entities.filter(id=>metadata.some(m=>m.statistic_id===id&&(field==='change'?m.has_sum===true:m.has_mean===true||(typeof m.mean_type==='number'&&m.mean_type!==0))&&((m.statistics_unit_of_measurement??m.unit_of_measurement??'')===(hass.states?.[id]?.attributes?.unit_of_measurement??''))));
    if(strict&&ids.length!==config.entities.length)throw new Error('statistics_unavailable');
    if(ids.length){
-    const field=config.aggregation_method==='min'?'min':config.aggregation_method==='max'?'max':'mean';
+    // Recorder change is the period's growth of sum, including HA's counter
+    // reset handling and the baseline before the first requested period.
     const response=await hass.callWS({type:'recorder/statistics_during_period',statistic_ids:ids,start_time:new Date(start).toISOString(),end_time:new Date(end).toISOString(),period,types:[field]});
     for(const id of ids){
      if(!Array.isArray(response[id])){if(strict)throw new Error('statistics_unavailable');continue;}
@@ -253,7 +256,52 @@ export function graphAxes(series,meta,config,start,end,visible=series.map(()=>tr
   }
   return {unit,...yAxis(group,unit===meta.items[0]?.unit?config:{})};
  });
- return {axes:alignZeroAxes(axes,config,meta.items[0]?.unit),seriesAxes,plotSeries};
+ return {axes:alignGridAxes(alignZeroAxes(axes,config,meta.items[0]?.unit),config),seriesAxes,plotSeries};
+}
+// Keep the first axis (including manual bounds/step) as the grid reference.
+// Other units use their own round step, expanding their ranges to fit the same
+// tick heights. A whole-step offset keeps each scale anchored at round values.
+export function alignGridAxes(axes,config={}){
+ if(axes.length<2)return axes;
+ const reference=axes[0],span=reference.max-reference.min;
+ if(!reference.ticks.length)return axes.map((axis,i)=>i?{...axis,ticks:[]}:axis);
+ const bottom=reference.min/reference.step,top=reference.max/reference.step;
+ const clean=value=>Number(value.toPrecision(15));
+ const nice=value=>{
+  const power=10**Math.floor(Math.log10(value));
+  return clean(([1,2,5,10].find(n=>n*power>=value*(1-1e-14))??10)*power);
+ };
+ const negative=axes.filter(a=>a.min<0);
+ const alignZero=config.align_zero!==false&&negative.length>1&&
+  !(reference.min<0&&(reference.max<0||(reference.max===0&&negative.some(a=>a.max>0))));
+ let zeroOffset=alignZero&&reference.min<0?0:null;
+ return axes.map((axis,i)=>{
+  if(!i)return axis;
+  let step=nice((axis.max-axis.min)*(reference.step/span));
+  const locked=alignZero&&axis.min<0?zeroOffset:null;
+  const finish=(step,offset)=>{
+   const min=clean((bottom+offset)*step),max=clean((top+offset)*step);
+   const ticks=reference.ticks.map(t=>clean((t/reference.step+offset)*step));
+   if(!Number.isFinite(min)||!Number.isFinite(max)||!(max>min)||ticks.some((t,j)=>!Number.isFinite(t)||(j&&t<=ticks[j-1])))throw new Error('y_step_count');
+   if(alignZero&&axis.min<0&&zeroOffset===null)zeroOffset=offset;
+   return {...axis,min,max,step,ticks};
+  };
+  for(let attempt=0;attempt<32;attempt++){
+   const lower=axis.max/step-top,upper=axis.min/step-bottom;
+   const epsilon=Number.EPSILON*Math.max(1,Math.abs(lower),Math.abs(upper))*8;
+   const first=Math.ceil(lower-epsilon),last=Math.floor(upper+epsilon);
+   const offset=locked??Math.max(first,Math.min(last,0));
+   if(locked!==null?offset>=lower-epsilon&&offset<=upper+epsilon:first<=last){
+    return finish(step,offset);
+   }
+   step=nice(step*(1+1e-10));
+  }
+  // A manual step can leave only an edge tick (e.g. 25–30, step 10).
+  // A secondary range crossing zero cannot fit an integer offset there.
+  // Allow shifted tick values instead of rejecting a valid configuration.
+  step=nice((axis.max-axis.min)*(reference.step/span));
+  return finish(step,Math.max(axis.max/step-top,Math.min(axis.min/step-bottom,0)));
+ });
 }
 // Expand only negative axes; never rescale readings or clip the original ranges.
 export function alignZeroAxes(axes,config={},primaryUnit=axes[0]?.unit){
@@ -306,30 +354,8 @@ export function yAxis(series,config={}){
  if(ticks.some((v,i)=>!Number.isFinite(v)||(i&&v<=ticks[i-1])))throw new Error('y_step_count');
  return {min,max,step,ticks};
 }
-const zoneFormats=new Map();
-function localParts(t,zone){
- let format=zoneFormats.get(zone);if(!format){format=new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});zoneFormats.set(zone,format);}
- return Object.fromEntries(format.formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,Number(p.value)]));
-}
-function localEpoch(t,zone){const p=localParts(t,zone);return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);}
-function midnight(nominal,zone){
- let t=nominal;for(let i=0;i<6;i++){const next=nominal-(localEpoch(t,zone)-t);if(next===t)return t;t=next;}
- // Midnight can be skipped by a timezone transition. Find the first valid
- // instant of the requested local date rather than oscillating across it.
- let low=nominal-36*3600000,high=nominal+36*3600000;
- while(high-low>1000){const mid=Math.floor((low+high)/2000)*1000,p=localParts(mid,zone);if(Date.UTC(p.year,p.month-1,p.day)>=nominal)high=mid;else low=mid;}
- return high;
-}
-export function periodBounds(t,period,zone='UTC'){
- zone ||= 'UTC';const p=localParts(t,zone),size={minute:60000,quarter_hour:900000,hour:3600000}[period];
- if(size){const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second),a=t-(local%size)-(t%1000);return [a,a+size];}
- let nominal=Date.UTC(p.year,p.month-1,period==='month'?1:p.day);let next;
- if(period==='week'){const day=new Date(nominal).getUTCDay();nominal-=((day+6)%7)*86400000;next=nominal+7*86400000;}
- else if(period==='month')next=Date.UTC(p.year,p.month,1);
- else next=nominal+86400000;
- return [midnight(nominal,zone),midnight(next,zone)];
-}
-export function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC'){
+export function periodBounds(t,period,zone='UTC'){return graphPeriodBounds(t,period,zone);}
+export function aggregateSeries(series,start,end,period='none',method='avg',zone='UTC',{preserveGaps=true}={}){
  if(period==='none')return series;
  const bounds=[];for(let a=start;a<end;){const b=Math.min(end,periodBounds(a,period,zone)[1]);bounds.push([a,b]);a=b;}
  return series.map(s=>{if(s.source==='statistics')return s;const points=[];let index=0;
@@ -346,10 +372,18 @@ export function aggregateSeries(series,start,end,period='none',method='avg',zone
    const fragments=[{t:a,valid:value!==null}];
    while(cursor<b){const until=Math.min(b,s.points[index]?.t??b);if(value!==null){total+=value*(until-cursor);duration+=until-cursor;min=Math.min(min,value);max=Math.max(max,value);}cursor=until;if(cursor<b){value=s.points[index++].v;if((value!==null)!==fragments.at(-1).valid)fragments.push({t:cursor,valid:value!==null});}}
    const aggregate=duration?(method==='min'?min:method==='max'?max:total/duration):null;
-   for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
+   if(preserveGaps)for(const f of fragments)points.push({t:f.t,v:f.valid?aggregate:null});
+   else points.push({t:a,v:aggregate});
   }
   return {id:s.id,points};
  });
+}
+// Drawing only: bridge internal gaps, retaining unknown starts and tails.
+// Run before viewport clipping so a zoom entirely inside a gap keeps both anchors.
+export function connectGapPoints(points){
+ const first=points.findIndex(p=>p.v!==null);if(first<0)return points;
+ let last=points.length-1;while(last>first&&points[last].v===null)last--;
+ return points.filter((p,i)=>p.v!==null||i<first||i>last);
 }
 export function displayPoints(points,start,end,bins=1500){
  let first=0,last=points.length;while(first<last){const mid=(first+last)>>1;if(points[mid].t<start)first=mid+1;else last=mid;}

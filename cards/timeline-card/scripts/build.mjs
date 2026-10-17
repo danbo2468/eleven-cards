@@ -1,2 +1,7 @@
 import {readFile,mkdir,writeFile} from 'node:fs/promises';
-const root=new URL('../',import.meta.url);let code=(await readFile(new URL('../../shared/card-header.js',root),'utf8')).replace(/^export /gm,'')+'\n'+(await readFile(new URL('../../shared/graph.js',root),'utf8')).replace(/^export /gm,'')+'\n';for(const name of ['timeline-utils.js','timeline-view.js','timeline-card.js'])code+=(await readFile(new URL('src/'+name,root),'utf8')).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\n';await mkdir(new URL('dist/',root),{recursive:true});await writeFile(new URL('dist/eleven-timeline-card.js',root),'(()=>{\n'+code+'\n})();\n');
+const root=new URL('../',import.meta.url);
+const sources=['../../shared/card-header.js','../../shared/graph.js','../../shared/periods.js','../../shared/period-controls.js','../../shared/chart-insights.js','src/timeline-utils.js','src/timeline-view.js','src/timeline-card.js'];
+let code='';
+for(const name of sources)code+=(await readFile(new URL(name,root),'utf8')).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\n';
+await mkdir(new URL('dist/',root),{recursive:true});
+await writeFile(new URL('dist/eleven-timeline-card.js',root),'(()=>{\n'+code+'\n})();\n');

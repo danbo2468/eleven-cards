@@ -14,7 +14,7 @@ Home Assistant dashboard cards for energy prices, sensor graphs and state timeli
 
 ![Eleven Dynamic Energy Price Card preview](cards/dynamic-energy-price-card/docs/images/revised-default-dark-desktop.png)
 
-All five cards include a visual editor and follow Home Assistant's light/dark theme and Dutch/English frontend language. Energy, History, Timeline and Bar Chart support synchronized hover across cards.
+All five cards include a visual editor and follow Home Assistant's light/dark theme and Dutch/English frontend language. Energy, History, Timeline and Bar Chart support synchronized hover across cards. History, Bar Chart and Timeline also share a compact period picker and a single group for previous/next, Now and zoom controls in the header, with rolling windows and local calendar days, weeks, months, quarters and years. These three cards also indicate zoom, support isolating one entity and provide an information icon beside History with compact per-sensor source and unit information. History and Bar Chart include per-sensor min/max/average for the viewed range; Delta Bar Chart adds sums in the same popup.
 
 The cards use existing Home Assistant data. They do not provide tariffs, create sensors or control devices. See each card's documentation for its sensor requirements and configuration options.
 
