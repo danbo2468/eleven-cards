@@ -1,12 +1,33 @@
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+export function bindCardPopupPosition(host,trigger,popup,isRequested,show){
+ let active=true;
+ const position=()=>{
+  if(!active||!isRequested())return;
+  const box=trigger.getBoundingClientRect();
+  // A newly inserted ha-card may not have rendered its slot yet. Never anchor
+  // an open popup to its temporarily empty trigger rectangle at (0, 0).
+  if(!box.width||!box.height){popup.style.visibility='hidden';return;}
+  const width=Math.min(380,window.innerWidth-16);
+  popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
+  popup.style.visibility='';show?.();
+  const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
+  popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
+  popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
+ };
+ const ready=host.shadowRoot.querySelector('ha-card')?.updateComplete;
+ if(ready?.then)ready.then(position,()=>{});
+ const observer=typeof ResizeObserver==='function'?new ResizeObserver(position):null;
+ observer?.observe(trigger);
+ return {position,disconnect(){active=false;observer?.disconnect();}};
+}
 // Native toggle events are asynchronous. Clear the other popup's restore
 // state synchronously, also for browsers using the attribute fallback.
 export function closeOtherCardPopups(host,kind){
  const period=kind==='period',root=host.shadowRoot;
- if(period){host._insightOpen=null;host._insightFocus=null;}
- else{host._periodMenuOpen=false;host._periodFocus=null;}
+ if(period){host._insightOpen=null;host._insightPending=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodMenuPending=false;host._periodFocus=null;}
  for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
   if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
   else panel.removeAttribute('data-fallback-open');

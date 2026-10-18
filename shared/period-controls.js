@@ -1,4 +1,4 @@
-import {cardHeaderIcon,closeOtherCardPopups} from './card-header.js';
+import {cardHeaderIcon,closeOtherCardPopups,bindCardPopupPosition} from './card-header.js';
 import {graphPeriodRange,chooseGraphPeriod,moveGraphPeriod} from './periods.js';
 const periodEscape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
@@ -34,13 +34,13 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 export function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
- host._periodFocus=null;
+ if(!host._periodMenuPending)host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
- if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
+ if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
-  host._periodMenuScroll=previousMenu.scrollTop;
-  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+  if(!host._periodMenuPending)host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=!!host._periodMenuPending||(typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open'));
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
@@ -62,32 +62,35 @@ function restorePeriodFocus(host,items=[]){
  const target=key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
  (target?.disabled?root.querySelector('[data-period="now"], [data-zoom="in"]:not(:disabled), .history-link'):target)?.focus?.({preventScroll:true});host._periodFocus=null;
 }
-export function disconnectPeriodControls(host){host._periodMenuCleanup?.();host._periodMenuCleanup=null;}
+export function disconnectPeriodControls(host,preserveState=false){host._periodMenuCleanup?.();host._periodMenuCleanup=null;if(!preserveState)host._periodMenuPending=false;}
 export function bindPeriodControls(host){
- disconnectPeriodControls(host);
+ disconnectPeriodControls(host,true);
  const root=host.shadowRoot,nav=root.querySelector('.period-controls');if(!nav){restorePeriodFocus(host);return;}
  const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')],native=typeof menu.showPopover==='function';
  const cleanups=[];
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
- const position=()=>{
-  const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);
-  menu.style.width=`${width}px`;menu.style.maxHeight=`${Math.min(560,window.innerHeight-16)}px`;
-  const height=menu.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
-  const top=below>=height||below>=above?box.bottom+6:box.top-height-6;
-  menu.style.left=`${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
-  menu.style.top=`${Math.max(8,Math.min(top,window.innerHeight-height-8))}px`;
- };
+ const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
+ let focusPending=false,scrollPending=false;
+ const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
+  host._periodMenuPending=false;
+  if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
+  if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
+  restorePeriodFocus(host,items);
+  // Hidden replacement menus have no scrolling box. Restore only once, after
+  // opening at the constrained height, without undoing subsequent user scroll.
+  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
+ }),position=placement.position;
+ cleanups.push(()=>placement.disconnect());
  const close=(restore=false)=>{
-  host._periodMenuOpen=false;trigger.setAttribute('aria-expanded','false');
+  host._periodMenuOpen=false;host._periodMenuPending=false;trigger.setAttribute('aria-expanded','false');
   if(native){if(menu.matches(':popover-open'))menu.hidePopover();}else menu.removeAttribute('data-fallback-open');
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
   closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
-  if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
-  position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
+  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
+  position();
  };
  // Remember the pointer state before native light dismissal runs on pointerup.
  let pointerWasOpen;
@@ -105,10 +108,10 @@ export function bindPeriodControls(host){
  };
  for(const [key,direction]of [['previous',-1],['next',1],['now',0]])root.querySelector(`[data-period="${key}"]`).onclick=()=>{close();moveGraphPeriod(host,direction);};
  listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
- listen(window,'scroll',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(menu))close();},true);
- if(!native)listen(document,'pointerdown',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
- if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
- restorePeriodFocus(host,items);
+ listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
+ listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
+ if(host._periodMenuOpen)open(false);
+ if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
 export function periodControlsStyles(){return `
 .period-controls{display:flex;min-width:0;max-width:100%}

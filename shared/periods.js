@@ -25,7 +25,7 @@ export function graphPeriodBounds(t,period,zone='UTC'){
 }
 const periodCalendarModes=['today','week','month','quarter','year'];
 const periodPresetHours={'1h':1,'6h':6,'12h':12,'24h':24,'48h':48,'7d':168,'14d':336,'30d':720,'90d':2160,'365d':8760};
-export function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;}
+export function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;host._periodMenuPending=false;host._insightPending=null;}
 export function graphPeriodRange(host,now=Date.now()){
  const mode=host._periodMode,offset=host._periodOffset??0;
  if(periodCalendarModes.includes(mode)){

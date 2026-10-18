@@ -58,6 +58,8 @@ The information icon beside **Open in History** opens **Data information / Gegev
 
 Timeline also retains the 6-hour and 24-hour choices. Status timelines use raw Recorder history; browsing older periods cannot restore purged state transitions.
 
+The information popup also lists the total time spent in each recorded state per entity, restricted to the visible (zoomed) interval. Repeated occurrences of a state are added together; custom display labels are respected without merging distinct states. Missing history, recorded Unknown and Unavailable remain separate. Durations use actual elapsed time, including daylight-saving transitions. No numeric min/max/average is calculated for categorical states.
+
 `show_summary`: default false. Optional state-duration totals below each entity, calculated over only the visible (zoomed) interval; missing/unknown/unavailable durations remain separate.
 
 `state_colors`: list of `state`, `color`, optional `label`, optional `entity`. Entity-specific mappings take priority over global mappings. Colors accept RGB arrays, hex, named CSS colors or CSS variables. `series_options`: list of `entity` and optional `name`.
@@ -75,3 +77,7 @@ Times follow the Home Assistant timezone; titles/messages follow Dutch/English f
 ## Verification
 
 From the collection root, run `npm test` and `npm run check`. Timeline tests and the isolated browser fixture live in the root `tests/` directory. Browser fixtures use explicitly synthetic data, not household history.
+
+Serve the repository over HTTP and open `tests/fixtures/timeline-popups.html` to exercise repeated updates while the card's slot renders asynchronously. It includes timeframe/information popup checks, theme and width switches, zoom, hover, and cancellation during rendering. Append `?fallback=1` to test browsers without the native Popover API. Popup placement waits for the trigger's layout and is updated after `ha-card.updateComplete` and trigger resizing; obsolete callbacks are disconnected when the card rerenders.
+
+For scroll restoration, use a short viewport (for example a 360 px high iframe) and choose **Tijdvak scrollen + verversen**. The reported `before` and `after` scroll offsets should match and be greater than zero, including after repeated pending renders. For outside dismissal, choose **Informatie + herhaald verversen**, wait for it to reopen, then click **Buitenklik**. Verify that the popup closes and stays closed after another update, especially with `?fallback=1`.

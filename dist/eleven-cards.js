@@ -2644,12 +2644,33 @@ function graphStyles() {
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function bindCardPopupPosition(host,trigger,popup,isRequested,show){
+ let active=true;
+ const position=()=>{
+  if(!active||!isRequested())return;
+  const box=trigger.getBoundingClientRect();
+  // A newly inserted ha-card may not have rendered its slot yet. Never anchor
+  // an open popup to its temporarily empty trigger rectangle at (0, 0).
+  if(!box.width||!box.height){popup.style.visibility='hidden';return;}
+  const width=Math.min(380,window.innerWidth-16);
+  popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
+  popup.style.visibility='';show?.();
+  const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
+  popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
+  popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
+ };
+ const ready=host.shadowRoot.querySelector('ha-card')?.updateComplete;
+ if(ready?.then)ready.then(position,()=>{});
+ const observer=typeof ResizeObserver==='function'?new ResizeObserver(position):null;
+ observer?.observe(trigger);
+ return {position,disconnect(){active=false;observer?.disconnect();}};
+}
 // Native toggle events are asynchronous. Clear the other popup's restore
 // state synchronously, also for browsers using the attribute fallback.
 function closeOtherCardPopups(host,kind){
  const period=kind==='period',root=host.shadowRoot;
- if(period){host._insightOpen=null;host._insightFocus=null;}
- else{host._periodMenuOpen=false;host._periodFocus=null;}
+ if(period){host._insightOpen=null;host._insightPending=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodMenuPending=false;host._periodFocus=null;}
  for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
   if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
   else panel.removeAttribute('data-fallback-open');
@@ -2718,7 +2739,7 @@ function graphPeriodBounds(t,period,zone='UTC'){
 }
 const periodCalendarModes=['today','week','month','quarter','year'];
 const periodPresetHours={'1h':1,'6h':6,'12h':12,'24h':24,'48h':48,'7d':168,'14d':336,'30d':720,'90d':2160,'365d':8760};
-function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;}
+function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;host._periodMenuPending=false;host._insightPending=null;}
 function graphPeriodRange(host,now=Date.now()){
  const mode=host._periodMode,offset=host._periodOffset??0;
  if(periodCalendarModes.includes(mode)){
@@ -2796,13 +2817,13 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
- host._periodFocus=null;
+ if(!host._periodMenuPending)host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
- if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
+ if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
-  host._periodMenuScroll=previousMenu.scrollTop;
-  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+  if(!host._periodMenuPending)host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=!!host._periodMenuPending||(typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open'));
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
@@ -2824,32 +2845,35 @@ function restorePeriodFocus(host,items=[]){
  const target=key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
  (target?.disabled?root.querySelector('[data-period="now"], [data-zoom="in"]:not(:disabled), .history-link'):target)?.focus?.({preventScroll:true});host._periodFocus=null;
 }
-function disconnectPeriodControls(host){host._periodMenuCleanup?.();host._periodMenuCleanup=null;}
+function disconnectPeriodControls(host,preserveState=false){host._periodMenuCleanup?.();host._periodMenuCleanup=null;if(!preserveState)host._periodMenuPending=false;}
 function bindPeriodControls(host){
- disconnectPeriodControls(host);
+ disconnectPeriodControls(host,true);
  const root=host.shadowRoot,nav=root.querySelector('.period-controls');if(!nav){restorePeriodFocus(host);return;}
  const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')],native=typeof menu.showPopover==='function';
  const cleanups=[];
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
- const position=()=>{
-  const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);
-  menu.style.width=`${width}px`;menu.style.maxHeight=`${Math.min(560,window.innerHeight-16)}px`;
-  const height=menu.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
-  const top=below>=height||below>=above?box.bottom+6:box.top-height-6;
-  menu.style.left=`${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
-  menu.style.top=`${Math.max(8,Math.min(top,window.innerHeight-height-8))}px`;
- };
+ const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
+ let focusPending=false,scrollPending=false;
+ const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
+  host._periodMenuPending=false;
+  if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
+  if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
+  restorePeriodFocus(host,items);
+  // Hidden replacement menus have no scrolling box. Restore only once, after
+  // opening at the constrained height, without undoing subsequent user scroll.
+  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
+ }),position=placement.position;
+ cleanups.push(()=>placement.disconnect());
  const close=(restore=false)=>{
-  host._periodMenuOpen=false;trigger.setAttribute('aria-expanded','false');
+  host._periodMenuOpen=false;host._periodMenuPending=false;trigger.setAttribute('aria-expanded','false');
   if(native){if(menu.matches(':popover-open'))menu.hidePopover();}else menu.removeAttribute('data-fallback-open');
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
   closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
-  if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
-  position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
+  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
+  position();
  };
  // Remember the pointer state before native light dismissal runs on pointerup.
  let pointerWasOpen;
@@ -2867,10 +2891,10 @@ function bindPeriodControls(host){
  };
  for(const [key,direction]of [['previous',-1],['next',1],['now',0]])root.querySelector(`[data-period="${key}"]`).onclick=()=>{close();moveGraphPeriod(host,direction);};
  listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
- listen(window,'scroll',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(menu))close();},true);
- if(!native)listen(document,'pointerdown',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
- if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
- restorePeriodFocus(host,items);
+ listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
+ listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
+ if(host._periodMenuOpen)open(false);
+ if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
 function periodControlsStyles(){return `
 .period-controls{display:flex;min-width:0;max-width:100%}
@@ -2966,8 +2990,8 @@ function chartDataInformation(host,language='en'){
    const source=load.sources.find(s=>s.id===item.id),row=summary?.rows.find(r=>r.id===item.id),hidden=!host._isSeriesVisible(i);
    const sourceLabel=source?(source.source==='statistics'?(nl?'Statistieken':'Statistics'):(nl?'Historie':'History')):(nl?'Niet geladen':'Not loaded');
    const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
-   const metrics=row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
-   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
+   const metrics=row?.durations?`<dl class="insight-durations">${row.durations.map(s=>`<div><dt title="${insightEscape(s.missing?(nl?'Geen geschiedenis':'No history'):s.state)}">${insightEscape(s.label)}</dt><dd>${insightEscape(host._duration(s.duration))}</dd></div>`).join('')}</dl>`:row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
+   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.limited?(nl?'Meer dan 20 statussen':'More than 20 states'):row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
    return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
   }).join('')}</div>`;
  }
@@ -2975,12 +2999,17 @@ function chartDataInformation(host,language='en'){
 }
 function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
- host._insightFocus=null;
+ if(!host._insightPending)host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- host._insightOpen=popup?.dataset.insightPanel??null;
+ host._insightOpen=popup?.dataset.insightPanel??host._insightPending??null;
 }
-function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
+function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelChartLegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
+function restoreChartInsightFocus(host){
+ if(!host._insightFocus||host._insightPending)return;
+ const root=host.shadowRoot,{key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
+ if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
+}
 function bindChartInsights(host){
  disconnectChartInsights(host,true);
  const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
@@ -2988,9 +3017,16 @@ function bindChartInsights(host){
  for(const control of root.querySelectorAll?.('.insight-control')??[]){
   const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
-  const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
-  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  let focusPending=false;
+  const placement=bindCardPopupPosition(host,trigger,popup,()=>host._insightOpen===key,()=>{
+   host._insightPending=null;
+   if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
+   if(focusPending){popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});focusPending=false;}
+   restoreChartInsightFocus(host);
+  }),position=placement.position;
+  cleanups.push(()=>placement.disconnect());
+  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;host._insightPending=key;focusPending=focus;trigger.setAttribute('aria-expanded','true');position();};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -3000,13 +3036,13 @@ function bindChartInsights(host){
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
   listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
   listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  if(!native)listen(document,'pointerdown',e=>{if(isOpen()&&!e.composedPath().includes(control))close();});
+  // Restored focus has a capture listener that may already clear restore state.
+  // A fallback popup still needs dismissal based on its actual visible state.
+  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
- if(host._insightFocus){const {key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
-  if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
-  else listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;}},true);
- }
+ restoreChartInsightFocus(host);
+ if(host._insightFocus)listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;host._insightPending=null;}},true);
  bindChartLegend(host);
 }
 function chartInsightStyles(){return `
@@ -3045,6 +3081,10 @@ function chartInsightStyles(){return `
 .insight-metrics dt{font-size:10px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
 .insight-metrics dd{margin:1px 0 0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--primary-text-color,#20252b)}
 .insight-states{font-size:10px;color:var(--secondary-text-color,#666);margin-top:4px}
+.insight-durations{margin:6px 0 0;display:grid;gap:4px}
+.insight-durations>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+.insight-durations dt{min-width:0;overflow-wrap:anywhere;color:var(--secondary-text-color,#666)}
+.insight-durations dd{margin:0;color:var(--primary-text-color,#20252b);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 [data-series]{touch-action:manipulation}
 `;}
 
@@ -3958,12 +3998,33 @@ if(!window.customCards.some(card=>card.type==='eleven-history-graph-card'))windo
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function bindCardPopupPosition(host,trigger,popup,isRequested,show){
+ let active=true;
+ const position=()=>{
+  if(!active||!isRequested())return;
+  const box=trigger.getBoundingClientRect();
+  // A newly inserted ha-card may not have rendered its slot yet. Never anchor
+  // an open popup to its temporarily empty trigger rectangle at (0, 0).
+  if(!box.width||!box.height){popup.style.visibility='hidden';return;}
+  const width=Math.min(380,window.innerWidth-16);
+  popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
+  popup.style.visibility='';show?.();
+  const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
+  popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
+  popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
+ };
+ const ready=host.shadowRoot.querySelector('ha-card')?.updateComplete;
+ if(ready?.then)ready.then(position,()=>{});
+ const observer=typeof ResizeObserver==='function'?new ResizeObserver(position):null;
+ observer?.observe(trigger);
+ return {position,disconnect(){active=false;observer?.disconnect();}};
+}
 // Native toggle events are asynchronous. Clear the other popup's restore
 // state synchronously, also for browsers using the attribute fallback.
 function closeOtherCardPopups(host,kind){
  const period=kind==='period',root=host.shadowRoot;
- if(period){host._insightOpen=null;host._insightFocus=null;}
- else{host._periodMenuOpen=false;host._periodFocus=null;}
+ if(period){host._insightOpen=null;host._insightPending=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodMenuPending=false;host._periodFocus=null;}
  for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
   if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
   else panel.removeAttribute('data-fallback-open');
@@ -4175,7 +4236,7 @@ function graphPeriodBounds(t,period,zone='UTC'){
 }
 const periodCalendarModes=['today','week','month','quarter','year'];
 const periodPresetHours={'1h':1,'6h':6,'12h':12,'24h':24,'48h':48,'7d':168,'14d':336,'30d':720,'90d':2160,'365d':8760};
-function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;}
+function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;host._periodMenuPending=false;host._insightPending=null;}
 function graphPeriodRange(host,now=Date.now()){
  const mode=host._periodMode,offset=host._periodOffset??0;
  if(periodCalendarModes.includes(mode)){
@@ -4252,13 +4313,13 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
- host._periodFocus=null;
+ if(!host._periodMenuPending)host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
- if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
+ if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
-  host._periodMenuScroll=previousMenu.scrollTop;
-  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+  if(!host._periodMenuPending)host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=!!host._periodMenuPending||(typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open'));
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
@@ -4280,32 +4341,35 @@ function restorePeriodFocus(host,items=[]){
  const target=key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
  (target?.disabled?root.querySelector('[data-period="now"], [data-zoom="in"]:not(:disabled), .history-link'):target)?.focus?.({preventScroll:true});host._periodFocus=null;
 }
-function disconnectPeriodControls(host){host._periodMenuCleanup?.();host._periodMenuCleanup=null;}
+function disconnectPeriodControls(host,preserveState=false){host._periodMenuCleanup?.();host._periodMenuCleanup=null;if(!preserveState)host._periodMenuPending=false;}
 function bindPeriodControls(host){
- disconnectPeriodControls(host);
+ disconnectPeriodControls(host,true);
  const root=host.shadowRoot,nav=root.querySelector('.period-controls');if(!nav){restorePeriodFocus(host);return;}
  const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')],native=typeof menu.showPopover==='function';
  const cleanups=[];
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
- const position=()=>{
-  const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);
-  menu.style.width=`${width}px`;menu.style.maxHeight=`${Math.min(560,window.innerHeight-16)}px`;
-  const height=menu.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
-  const top=below>=height||below>=above?box.bottom+6:box.top-height-6;
-  menu.style.left=`${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
-  menu.style.top=`${Math.max(8,Math.min(top,window.innerHeight-height-8))}px`;
- };
+ const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
+ let focusPending=false,scrollPending=false;
+ const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
+  host._periodMenuPending=false;
+  if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
+  if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
+  restorePeriodFocus(host,items);
+  // Hidden replacement menus have no scrolling box. Restore only once, after
+  // opening at the constrained height, without undoing subsequent user scroll.
+  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
+ }),position=placement.position;
+ cleanups.push(()=>placement.disconnect());
  const close=(restore=false)=>{
-  host._periodMenuOpen=false;trigger.setAttribute('aria-expanded','false');
+  host._periodMenuOpen=false;host._periodMenuPending=false;trigger.setAttribute('aria-expanded','false');
   if(native){if(menu.matches(':popover-open'))menu.hidePopover();}else menu.removeAttribute('data-fallback-open');
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
   closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
-  if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
-  position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
+  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
+  position();
  };
  // Remember the pointer state before native light dismissal runs on pointerup.
  let pointerWasOpen;
@@ -4323,10 +4387,10 @@ function bindPeriodControls(host){
  };
  for(const [key,direction]of [['previous',-1],['next',1],['now',0]])root.querySelector(`[data-period="${key}"]`).onclick=()=>{close();moveGraphPeriod(host,direction);};
  listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
- listen(window,'scroll',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(menu))close();},true);
- if(!native)listen(document,'pointerdown',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
- if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
- restorePeriodFocus(host,items);
+ listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
+ listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
+ if(host._periodMenuOpen)open(false);
+ if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
 function periodControlsStyles(){return `
 .period-controls{display:flex;min-width:0;max-width:100%}
@@ -4421,8 +4485,8 @@ function chartDataInformation(host,language='en'){
    const source=load.sources.find(s=>s.id===item.id),row=summary?.rows.find(r=>r.id===item.id),hidden=!host._isSeriesVisible(i);
    const sourceLabel=source?(source.source==='statistics'?(nl?'Statistieken':'Statistics'):(nl?'Historie':'History')):(nl?'Niet geladen':'Not loaded');
    const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
-   const metrics=row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
-   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
+   const metrics=row?.durations?`<dl class="insight-durations">${row.durations.map(s=>`<div><dt title="${insightEscape(s.missing?(nl?'Geen geschiedenis':'No history'):s.state)}">${insightEscape(s.label)}</dt><dd>${insightEscape(host._duration(s.duration))}</dd></div>`).join('')}</dl>`:row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
+   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.limited?(nl?'Meer dan 20 statussen':'More than 20 states'):row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
    return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
   }).join('')}</div>`;
  }
@@ -4430,12 +4494,17 @@ function chartDataInformation(host,language='en'){
 }
 function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
- host._insightFocus=null;
+ if(!host._insightPending)host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- host._insightOpen=popup?.dataset.insightPanel??null;
+ host._insightOpen=popup?.dataset.insightPanel??host._insightPending??null;
 }
-function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
+function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelChartLegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
+function restoreChartInsightFocus(host){
+ if(!host._insightFocus||host._insightPending)return;
+ const root=host.shadowRoot,{key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
+ if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
+}
 function bindChartInsights(host){
  disconnectChartInsights(host,true);
  const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
@@ -4443,9 +4512,16 @@ function bindChartInsights(host){
  for(const control of root.querySelectorAll?.('.insight-control')??[]){
   const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
-  const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
-  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  let focusPending=false;
+  const placement=bindCardPopupPosition(host,trigger,popup,()=>host._insightOpen===key,()=>{
+   host._insightPending=null;
+   if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
+   if(focusPending){popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});focusPending=false;}
+   restoreChartInsightFocus(host);
+  }),position=placement.position;
+  cleanups.push(()=>placement.disconnect());
+  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;host._insightPending=key;focusPending=focus;trigger.setAttribute('aria-expanded','true');position();};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -4455,13 +4531,13 @@ function bindChartInsights(host){
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
   listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
   listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  if(!native)listen(document,'pointerdown',e=>{if(isOpen()&&!e.composedPath().includes(control))close();});
+  // Restored focus has a capture listener that may already clear restore state.
+  // A fallback popup still needs dismissal based on its actual visible state.
+  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
- if(host._insightFocus){const {key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
-  if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
-  else listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;}},true);
- }
+ restoreChartInsightFocus(host);
+ if(host._insightFocus)listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;host._insightPending=null;}},true);
  bindChartLegend(host);
 }
 function chartInsightStyles(){return `
@@ -4500,9 +4576,26 @@ function chartInsightStyles(){return `
 .insight-metrics dt{font-size:10px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
 .insight-metrics dd{margin:1px 0 0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--primary-text-color,#20252b)}
 .insight-states{font-size:10px;color:var(--secondary-text-color,#666);margin-top:4px}
+.insight-durations{margin:6px 0 0;display:grid;gap:4px}
+.insight-durations>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+.insight-durations dt{min-width:0;overflow-wrap:anywhere;color:var(--secondary-text-color,#666)}
+.insight-durations dd{margin:0;color:var(--primary-text-color,#20252b);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 [data-series]{touch-action:manipulation}
 `;}
 
+// Sum elapsed time by the original state, keeping missing history separate
+// even when it shares a display label with a recorded unknown state.
+function timelineStateDurations(series,start,end){
+ const totals=new Map();
+ for(const s of series){
+  const duration=Math.max(0,Math.min(end,s.end)-Math.max(start,s.start));
+  if(!duration)continue;
+  const key=s.missing?null:s.state;
+  if(!totals.has(key))totals.set(key,{state:s.state,missing:!!s.missing,duration:0});
+  totals.get(key).duration+=duration;
+ }
+ return [...totals.values()];
+}
 function segments(rows,start,end){
  const points=rows.map((r,i)=>({t:Date.parse(r.last_changed??r.last_updated),state:String(r.state??'unknown'),i})).filter(p=>Number.isFinite(p.t)&&p.t<=end).sort((a,b)=>a.t-b.t||a.i-b.i);
  let state='unknown',cursor=start;const result=[];
@@ -4518,6 +4611,14 @@ const TimelineView={
  _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._render();return this._refresh();},
  _ticks(){const width=this.shadowRoot.host?.clientWidth??600,count=width<400?3:5;return Array.from({length:count},(_,i)=>i/(count-1));},
  _segmentAppearance(s,id){return s.missing?{label:this._nl()?'Geen geschiedenis':'No history',color:'transparent'}:this._appearance(s.state,id);},
+ _dataInformation(){
+  const start=this._viewStart,end=this._viewEnd;
+  return {start,end,rows:this._config.entities.map((id,i)=>{
+   const durations=timelineStateDurations(this._series[i]??[],start,end).map(s=>({...s,label:this._segmentAppearance(s,id).label}));
+   const known=durations.filter(s=>!s.missing);
+   return {id,durations,count:known.length,missing:known.reduce((sum,s)=>sum+s.duration,0)<end-start-1,limited:!!this._stateLimits?.[i]};
+  })};
+ },
  _summary(index){const totals=new Map();for(const s of this._series[index]??[]){const ms=Math.max(0,Math.min(s.end,this._viewEnd)-Math.max(s.start,this._viewStart)),label=this._segmentAppearance(s,this._config.entities[index]).label;if(ms)totals.set(label,(totals.get(label)??0)+ms);}return [...totals].map(([label,ms])=>`${label}: ${this._duration(ms)}`).join(' · ');},
  _stateLimitMessage(){return this._nl()?'Maximaal 20 verschillende statussen per entiteit. Deze entiteit heeft er meer in de gekozen periode.':'Maximum 20 distinct states per entity. This entity has more in the selected period.';},
  _name(id){return this._config.series_options.find(x=>x.entity===id)?.name??this._hass?.states?.[id]?.attributes?.friendly_name??id;},
@@ -4533,7 +4634,7 @@ const TimelineView={
   if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart'),tooltip=chart?.querySelector('.tooltip'),guide=chart?.querySelector('.guide');if(!tooltip)return;
   this._cursor=t;const nl=this._nl(),a=this._viewStart,b=this._viewEnd,esc=escapeTimeline;
-  tooltip.innerHTML=`<strong>${esc(this._time(t))}</strong>`+this._config.entities.map((id,i)=>{if(!this._isSeriesVisible(i)||this._stateLimits?.[i])return '';const s=(this._series[i]??[]).find(s=>s.start<=t&&(t<s.end||(t===b&&s.end===b)));if(!s)return `<span>${esc(this._name(id))}: ${nl?'Geen geschiedenis':'No history'}</span>`;const v=this._segmentAppearance(s,id);return `<span><i style="background:${v.color}"></i><b>${esc(this._name(id))}: ${esc(v.label)}</b><small>${esc(this._time(s.start))} – ${esc(this._time(s.end))} · ${esc(this._duration(s.end-s.start))}</small></span>`;}).join('');
+  tooltip.innerHTML=`<strong>${esc(this._time(t))}</strong>`+this._config.entities.map((id,i)=>{if(!this._isSeriesVisible(i)||this._stateLimits?.[i])return '';const s=(this._series[i]??[]).find(s=>s.start<=t&&(t<s.end||(t===b&&s.end===b))),v=s?this._segmentAppearance(s,id):{label:nl?'Geen geschiedenis':'No history',color:'transparent'};return `<span><i style="background:${v.color}"></i><b class="tooltip-label">${esc(this._name(id))}: <em class="tooltip-value">${esc(v.label)}</em></b>${s?`<small>${esc(this._time(s.start))} – ${esc(this._time(s.end))} · ${esc(this._duration(s.end-s.start))}</small>`:''}</span>`;}).join('');
   tooltip.hidden=false;tooltip.style.pointerEvents=this._pinned?'auto':'none';const box=chart.getBoundingClientRect(),px=(t-a)/(b-a)*box.width;
   if(guide){guide.hidden=false;guide.style.left=`${px}px`;}
   tooltip.style.maxHeight=`${Math.min(360,(window.innerHeight??480)-16)}px`;
@@ -4588,6 +4689,8 @@ ${chartInsightStyles()}
 .guide{position:absolute;top:0;bottom:0;border-left:1px solid var(--primary-text-color,#20252b);opacity:.6;pointer-events:none;z-index:2}
 .zoom-selection{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--primary-color,#2196f3) 18%,transparent);border-inline:1px solid var(--primary-color,#2196f3);pointer-events:none;z-index:3}
 ${SharedGraph.tooltipStyles()}
+.tooltip .tooltip-label{color:var(--secondary-text-color,#666)}
+.tooltip .tooltip-value{color:var(--primary-text-color,#20252b);font-style:normal}
 .state-limit{font-size:12px;color:var(--error-color,#db4437);overflow-wrap:anywhere;position:relative}
 .message{font-size:14px;color:var(--secondary-text-color,#666);min-height:60px}
 .retry{display:block;margin-top:12px;min-height:44px;background:transparent;color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:6px;padding:8px 12px}[hidden]{display:none}</style><ha-card><div class="content">${controls}${body}</div></ha-card>`;
@@ -5052,12 +5155,33 @@ function graphStyles() {
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function bindCardPopupPosition(host,trigger,popup,isRequested,show){
+ let active=true;
+ const position=()=>{
+  if(!active||!isRequested())return;
+  const box=trigger.getBoundingClientRect();
+  // A newly inserted ha-card may not have rendered its slot yet. Never anchor
+  // an open popup to its temporarily empty trigger rectangle at (0, 0).
+  if(!box.width||!box.height){popup.style.visibility='hidden';return;}
+  const width=Math.min(380,window.innerWidth-16);
+  popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
+  popup.style.visibility='';show?.();
+  const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
+  popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
+  popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
+ };
+ const ready=host.shadowRoot.querySelector('ha-card')?.updateComplete;
+ if(ready?.then)ready.then(position,()=>{});
+ const observer=typeof ResizeObserver==='function'?new ResizeObserver(position):null;
+ observer?.observe(trigger);
+ return {position,disconnect(){active=false;observer?.disconnect();}};
+}
 // Native toggle events are asynchronous. Clear the other popup's restore
 // state synchronously, also for browsers using the attribute fallback.
 function closeOtherCardPopups(host,kind){
  const period=kind==='period',root=host.shadowRoot;
- if(period){host._insightOpen=null;host._insightFocus=null;}
- else{host._periodMenuOpen=false;host._periodFocus=null;}
+ if(period){host._insightOpen=null;host._insightPending=null;host._insightFocus=null;}
+ else{host._periodMenuOpen=false;host._periodMenuPending=false;host._periodFocus=null;}
  for(const panel of root.querySelectorAll?.(period?'.insight-popup':'.period-menu')??[]){
   if(typeof panel.showPopover==='function'){if(panel.matches(':popover-open'))panel.hidePopover();}
   else panel.removeAttribute('data-fallback-open');
@@ -5126,7 +5250,7 @@ function graphPeriodBounds(t,period,zone='UTC'){
 }
 const periodCalendarModes=['today','week','month','quarter','year'];
 const periodPresetHours={'1h':1,'6h':6,'12h':12,'24h':24,'48h':48,'7d':168,'14d':336,'30d':720,'90d':2160,'365d':8760};
-function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;}
+function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;host._periodMenuPending=false;host._insightPending=null;}
 function graphPeriodRange(host,now=Date.now()){
  const mode=host._periodMode,offset=host._periodOffset??0;
  if(periodCalendarModes.includes(mode)){
@@ -5204,13 +5328,13 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 }
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
- host._periodFocus=null;
+ if(!host._periodMenuPending)host._periodFocus=null;
  if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
- if(host._config.show_navigation===false){host._periodMenuOpen=false;return {};}
+ if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
-  host._periodMenuScroll=previousMenu.scrollTop;
-  host._periodMenuOpen=typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open');
+  if(!host._periodMenuPending)host._periodMenuScroll=previousMenu.scrollTop;
+  host._periodMenuOpen=!!host._periodMenuPending||(typeof previousMenu.showPopover==='function'?previousMenu.matches(':popover-open'):previousMenu.hasAttribute('data-fallback-open'));
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
@@ -5232,32 +5356,35 @@ function restorePeriodFocus(host,items=[]){
  const target=key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
  (target?.disabled?root.querySelector('[data-period="now"], [data-zoom="in"]:not(:disabled), .history-link'):target)?.focus?.({preventScroll:true});host._periodFocus=null;
 }
-function disconnectPeriodControls(host){host._periodMenuCleanup?.();host._periodMenuCleanup=null;}
+function disconnectPeriodControls(host,preserveState=false){host._periodMenuCleanup?.();host._periodMenuCleanup=null;if(!preserveState)host._periodMenuPending=false;}
 function bindPeriodControls(host){
- disconnectPeriodControls(host);
+ disconnectPeriodControls(host,true);
  const root=host.shadowRoot,nav=root.querySelector('.period-controls');if(!nav){restorePeriodFocus(host);return;}
  const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')],native=typeof menu.showPopover==='function';
  const cleanups=[];
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
- const position=()=>{
-  const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);
-  menu.style.width=`${width}px`;menu.style.maxHeight=`${Math.min(560,window.innerHeight-16)}px`;
-  const height=menu.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
-  const top=below>=height||below>=above?box.bottom+6:box.top-height-6;
-  menu.style.left=`${Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))}px`;
-  menu.style.top=`${Math.max(8,Math.min(top,window.innerHeight-height-8))}px`;
- };
+ const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
+ let focusPending=false,scrollPending=false;
+ const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
+  host._periodMenuPending=false;
+  if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
+  if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
+  restorePeriodFocus(host,items);
+  // Hidden replacement menus have no scrolling box. Restore only once, after
+  // opening at the constrained height, without undoing subsequent user scroll.
+  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
+ }),position=placement.position;
+ cleanups.push(()=>placement.disconnect());
  const close=(restore=false)=>{
-  host._periodMenuOpen=false;trigger.setAttribute('aria-expanded','false');
+  host._periodMenuOpen=false;host._periodMenuPending=false;trigger.setAttribute('aria-expanded','false');
   if(native){if(menu.matches(':popover-open'))menu.hidePopover();}else menu.removeAttribute('data-fallback-open');
   if(restore)trigger.focus({preventScroll:true});
  };
  const open=(focus=true)=>{
   closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;trigger.setAttribute('aria-expanded','true');
-  if(native){if(!menu.matches(':popover-open'))menu.showPopover();}else menu.setAttribute('data-fallback-open','');
-  position();if(focus)(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});
+  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
+  position();
  };
  // Remember the pointer state before native light dismissal runs on pointerup.
  let pointerWasOpen;
@@ -5275,10 +5402,10 @@ function bindPeriodControls(host){
  };
  for(const [key,direction]of [['previous',-1],['next',1],['now',0]])root.querySelector(`[data-period="${key}"]`).onclick=()=>{close();moveGraphPeriod(host,direction);};
  listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
- listen(window,'scroll',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(menu))close();},true);
- if(!native)listen(document,'pointerdown',e=>{if(host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
- if(host._periodMenuOpen){open(false);menu.scrollTop=host._periodMenuScroll??0;}
- restorePeriodFocus(host,items);
+ listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
+ listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
+ if(host._periodMenuOpen)open(false);
+ if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
 function periodControlsStyles(){return `
 .period-controls{display:flex;min-width:0;max-width:100%}
@@ -5374,8 +5501,8 @@ function chartDataInformation(host,language='en'){
    const source=load.sources.find(s=>s.id===item.id),row=summary?.rows.find(r=>r.id===item.id),hidden=!host._isSeriesVisible(i);
    const sourceLabel=source?(source.source==='statistics'?(nl?'Statistieken':'Statistics'):(nl?'Historie':'History')):(nl?'Niet geladen':'Not loaded');
    const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
-   const metrics=row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
-   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
+   const metrics=row?.durations?`<dl class="insight-durations">${row.durations.map(s=>`<div><dt title="${insightEscape(s.missing?(nl?'Geen geschiedenis':'No history'):s.state)}">${insightEscape(s.label)}</dt><dd>${insightEscape(host._duration(s.duration))}</dd></div>`).join('')}</dl>`:row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
+   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.limited?(nl?'Meer dan 20 statussen':'More than 20 states'):row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
    return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
   }).join('')}</div>`;
  }
@@ -5383,12 +5510,17 @@ function chartDataInformation(host,language='en'){
 }
 function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
- host._insightFocus=null;
+ if(!host._insightPending)host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- host._insightOpen=popup?.dataset.insightPanel??null;
+ host._insightOpen=popup?.dataset.insightPanel??host._insightPending??null;
 }
-function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
+function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelChartLegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
+function restoreChartInsightFocus(host){
+ if(!host._insightFocus||host._insightPending)return;
+ const root=host.shadowRoot,{key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
+ if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
+}
 function bindChartInsights(host){
  disconnectChartInsights(host,true);
  const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
@@ -5396,9 +5528,16 @@ function bindChartInsights(host){
  for(const control of root.querySelectorAll?.('.insight-control')??[]){
   const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
-  const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
-  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  let focusPending=false;
+  const placement=bindCardPopupPosition(host,trigger,popup,()=>host._insightOpen===key,()=>{
+   host._insightPending=null;
+   if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
+   if(focusPending){popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});focusPending=false;}
+   restoreChartInsightFocus(host);
+  }),position=placement.position;
+  cleanups.push(()=>placement.disconnect());
+  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;host._insightPending=key;focusPending=focus;trigger.setAttribute('aria-expanded','true');position();};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -5408,13 +5547,13 @@ function bindChartInsights(host){
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
   listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
   listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  if(!native)listen(document,'pointerdown',e=>{if(isOpen()&&!e.composedPath().includes(control))close();});
+  // Restored focus has a capture listener that may already clear restore state.
+  // A fallback popup still needs dismissal based on its actual visible state.
+  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
- if(host._insightFocus){const {key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
-  if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
-  else listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;}},true);
- }
+ restoreChartInsightFocus(host);
+ if(host._insightFocus)listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;host._insightPending=null;}},true);
  bindChartLegend(host);
 }
 function chartInsightStyles(){return `
@@ -5453,6 +5592,10 @@ function chartInsightStyles(){return `
 .insight-metrics dt{font-size:10px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
 .insight-metrics dd{margin:1px 0 0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--primary-text-color,#20252b)}
 .insight-states{font-size:10px;color:var(--secondary-text-color,#666);margin-top:4px}
+.insight-durations{margin:6px 0 0;display:grid;gap:4px}
+.insight-durations>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+.insight-durations dt{min-width:0;overflow-wrap:anywhere;color:var(--secondary-text-color,#666)}
+.insight-durations dd{margin:0;color:var(--primary-text-color,#20252b);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 [data-series]{touch-action:manipulation}
 `;}
 

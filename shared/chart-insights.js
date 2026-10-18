@@ -1,4 +1,4 @@
-import {cardHeaderIcon,closeOtherCardPopups} from './card-header.js';
+import {cardHeaderIcon,closeOtherCardPopups,bindCardPopupPosition} from './card-header.js';
 const insightEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function chartZoomState(host){
  const total=host._end-host._start,ready=host._status==='ready'&&Number.isFinite(total)&&total>0;
@@ -73,8 +73,8 @@ export function chartDataInformation(host,language='en'){
    const source=load.sources.find(s=>s.id===item.id),row=summary?.rows.find(r=>r.id===item.id),hidden=!host._isSeriesVisible(i);
    const sourceLabel=source?(source.source==='statistics'?(nl?'Statistieken':'Statistics'):(nl?'Historie':'History')):(nl?'Niet geladen':'Not loaded');
    const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
-   const metrics=row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
-   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
+   const metrics=row?.durations?`<dl class="insight-durations">${row.durations.map(s=>`<div><dt title="${insightEscape(s.missing?(nl?'Geen geschiedenis':'No history'):s.state)}">${insightEscape(s.label)}</dt><dd>${insightEscape(host._duration(s.duration))}</dd></div>`).join('')}</dl>`:row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
+   const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.limited?(nl?'Meer dan 20 statussen':'More than 20 states'):row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
    return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
   }).join('')}</div>`;
  }
@@ -82,12 +82,17 @@ export function chartDataInformation(host,language='en'){
 }
 export function captureChartInsights(host){
  const active=host.shadowRoot.activeElement;
- host._insightFocus=null;
+ if(!host._insightPending)host._insightFocus=null;
  if(active?.closest?.('.insight-control'))host._insightFocus={key:active.closest('.insight-control').querySelector('[data-insight]')?.dataset.insight,inside:!!active.closest('.insight-popup'),entity:active.dataset.isolate,all:active.hasAttribute('data-show-all')};
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
- host._insightOpen=popup?.dataset.insightPanel??null;
+ host._insightOpen=popup?.dataset.insightPanel??host._insightPending??null;
 }
-export function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks)cancelChartLegendClicks(host);host._insightCleanup?.();host._insightCleanup=null;}
+export function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelChartLegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
+function restoreChartInsightFocus(host){
+ if(!host._insightFocus||host._insightPending)return;
+ const root=host.shadowRoot,{key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
+ if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
+}
 export function bindChartInsights(host){
  disconnectChartInsights(host,true);
  const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
@@ -95,9 +100,16 @@ export function bindChartInsights(host){
  for(const control of root.querySelectorAll?.('.insight-control')??[]){
   const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
   const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
-  const position=()=>{const box=trigger.getBoundingClientRect(),width=Math.min(380,window.innerWidth-16);popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';};
-  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;trigger.setAttribute('aria-expanded','true');if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');position();if(focus)popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});};
+  let focusPending=false;
+  const placement=bindCardPopupPosition(host,trigger,popup,()=>host._insightOpen===key,()=>{
+   host._insightPending=null;
+   if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
+   if(focusPending){popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});focusPending=false;}
+   restoreChartInsightFocus(host);
+  }),position=placement.position;
+  cleanups.push(()=>placement.disconnect());
+  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
+  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;host._insightPending=key;focusPending=focus;trigger.setAttribute('aria-expanded','true');position();};
   let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
   trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
   popup.querySelector('[data-insight-close]').onclick=()=>close(true);
@@ -107,13 +119,13 @@ export function bindChartInsights(host){
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
   listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
   listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  if(!native)listen(document,'pointerdown',e=>{if(isOpen()&&!e.composedPath().includes(control))close();});
+  // Restored focus has a capture listener that may already clear restore state.
+  // A fallback popup still needs dismissal based on its actual visible state.
+  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
- if(host._insightFocus){const {key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
-  if(target){target.focus?.({preventScroll:true});host._insightFocus=null;}
-  else listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;}},true);
- }
+ restoreChartInsightFocus(host);
+ if(host._insightFocus)listen(document,'pointerdown',e=>{if(!e.composedPath().includes(host)){host._insightFocus=null;host._insightOpen=null;host._insightPending=null;}},true);
  bindChartLegend(host);
 }
 export function chartInsightStyles(){return `
@@ -152,5 +164,9 @@ export function chartInsightStyles(){return `
 .insight-metrics dt{font-size:10px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
 .insight-metrics dd{margin:1px 0 0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--primary-text-color,#20252b)}
 .insight-states{font-size:10px;color:var(--secondary-text-color,#666);margin-top:4px}
+.insight-durations{margin:6px 0 0;display:grid;gap:4px}
+.insight-durations>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+.insight-durations dt{min-width:0;overflow-wrap:anywhere;color:var(--secondary-text-color,#666)}
+.insight-durations dd{margin:0;color:var(--primary-text-color,#20252b);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 [data-series]{touch-action:manipulation}
 `;}
