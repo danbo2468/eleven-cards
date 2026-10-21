@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eleven Heatmap — synthetic QA</title>
+<style>
+body{margin:0;padding:20px;background:#f4f5f6;font:14px system-ui;--card-background-color:#fff;--primary-text-color:#20252b;--secondary-text-color:#626970;--divider-color:#d4d9df;--secondary-background-color:#edf0f3;--primary-color:#2563eb;color:var(--primary-text-color)}body.dark{background:#111418;--card-background-color:#20252b;--primary-text-color:#e5e7eb;--secondary-text-color:#b0b6be;--divider-color:#59616d;--secondary-background-color:#303842}main{width:100%;max-width:1000px;margin:auto}main.narrow{max-width:320px}button{font:inherit;min-height:36px;padding:6px 10px;background:var(--card-background-color);color:inherit;border:1px solid var(--divider-color);border-radius:5px;cursor:pointer}.tools{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}ha-card{border:1px solid var(--divider-color);border-radius:12px}eleven-heatmap-card{display:block}#editor{margin-top:20px}p{line-height:1.5}label{display:flex;flex-direction:column;gap:4px;margin:8px 0}details{border:1px solid var(--divider-color);border-radius:12px;margin:12px 0;min-width:0}summary{padding:12px;min-height:44px;box-sizing:border-box;cursor:pointer}.form-body{padding:0 12px 12px}fieldset{border:1px solid var(--divider-color);margin:8px 0;min-width:0}input,select{box-sizing:border-box;max-width:100%;min-width:0;font:inherit;color:inherit;background:var(--card-background-color);padding:8px;border:1px solid var(--divider-color)}
+</style></head><body><main>
+<p>Synthetic QA fixture · geen echte woninggegevens. Alle sensoren en patronen zijn verzonnen.</p>
+<div class="tools">
+<label>Aggregatieperiode<select id="grouping"><option value="hour">Uur</option><option value="day">Dag</option><option value="week">Week</option><option value="month">Maand</option></select></label>
+<button id="theme">Licht / donker</button><button id="width">320 / 1000 px</button>
+<button id="average">Gemiddelde</button><button id="consumption">Verbruik</button>
+<button id="raw">Recorder met gaten</button><button id="empty">Geen gegevens</button>
+<button id="error">Fout bij verversen</button><button id="recover">Verbinding herstellen</button>
+<button id="refresh">Verversen</button><button id="english">NL / EN</button><button id="editor-button">Editor tonen</button><button id="popups">Popups controleren</button><button id="colors">Kleurkeuze controleren</button><button id="audit">Gegevens controleren</button><button id="config-check">Editor controleren</button><button id="grouping-check">Groepering controleren</button>
+</div>
+<eleven-heatmap-card></eleven-heatmap-card><div id="editor"></div>
+</main><script src="../dist/eleven-heatmap-card.js"></script><script src="ha-form-fixture.js"></script><script>
+
+window.card=document.querySelector('eleven-heatmap-card');
+window.qaMode='statistics';window.offline=false;window.qaCalls=0;
+window.qaHass={language:'nl',locale:{language:'nl'},config:{time_zone:'Europe/Amsterdam'},states:{'sensor.synthetic':{state:'320',attributes:{friendly_name:'Voorbeeldsensor',unit_of_measurement:'W'}}},
+  callWS:async request=>{
+    qaCalls++;if(offline)throw Error('Synthetic offline');if(qaMode==='history')return [];
+    if(request.type.endsWith('metadata')){const unit=qaHass.states['sensor.synthetic'].attributes.unit_of_measurement;return [{statistic_id:'sensor.synthetic',mean_type:1,has_sum:true,statistics_unit_of_measurement:unit==='kWh'?'Wh':unit,display_unit_of_measurement:unit}];}
+    if(qaMode==='empty')return {};
+    const a=Math.floor(Date.parse(request.start_time)/3600000)*3600000,b=Date.parse(request.end_time),rows=[];
+    for(let t=a;t<b;t+=3600000){const h=new Date(t).getUTCHours(),i=Math.floor(t/3600000),value=Math.max(0,120+Math.sin(i*.31)*50+(h>=16&&h<=21?400:0));rows.push({start:t,end:t+3600000,mean:i%67===0?null:value,change:i%67===0?null:value/1000});}
+    return {'sensor.synthetic':rows};
+  },callApi:async(method,url)=>{
+    qaCalls++;if(offline)throw Error('Synthetic offline');if(qaMode==='empty')return [];
+    const a=Date.parse(url.split('history/period/')[1].split('?')[0]),b=Date.parse(new URLSearchParams(url.split('?')[1]).get('end_time')),rows=[];
+    for(let t=a;t<b;t+=1800000){const i=Math.floor(t/1800000);rows.push({entity_id:'sensor.synthetic',last_changed:new Date(t).toISOString(),state:i%49<5?'unavailable':String(Math.sin(i*.2)*100+300),attributes:{unit_of_measurement:qaHass.states['sensor.synthetic'].attributes.unit_of_measurement}});}
+    return [rows];
+  }};
+function configure(mode='average',source='statistics'){
+  qaMode=source;offline=false;qaHass.states['sensor.synthetic'].attributes.unit_of_measurement=mode==='consumption'?'kWh':'W';card.hass=qaHass;
+  card.setConfig({entity:'sensor.synthetic',title:'Heatmap',mode,hours_to_show:672});
+  document.getElementById('grouping').value='hour';
+}
+document.getElementById('grouping').onchange=event=>{card.setConfig({...card._config,aggregation_period:event.target.value});if(window.editor)editor.setConfig(card._config);};
+document.getElementById('theme').onclick=()=>document.body.classList.toggle('dark');
+document.getElementById('width').onclick=()=>document.querySelector('main').classList.toggle('narrow');
+document.getElementById('average').onclick=()=>configure();
+document.getElementById('consumption').onclick=()=>configure('consumption');
+document.getElementById('raw').onclick=()=>configure('average','history');
+document.getElementById('empty').onclick=()=>configure('average','empty');
+document.getElementById('error').onclick=()=>{offline=true;card._refresh();};
+document.getElementById('recover').onclick=()=>{offline=false;card._refresh();};
+document.getElementById('refresh').onclick=()=>card._refresh();
+document.getElementById('english').onclick=()=>{qaHass.language=qaHass.language==='nl'?'en':'nl';qaHass.locale.language=qaHass.language;card.hass=qaHass;if(window.editor)editor.hass=qaHass;};
+document.getElementById('editor-button').onclick=async()=>{window.editor=await card.constructor.getConfigElement();editor.setConfig(card._config);editor.hass=qaHass;editor.addEventListener('config-changed',e=>{try{card.setConfig(e.detail.config);window.qaPreviewError=null;}catch(error){window.qaPreviewError=error.message;}});document.getElementById('editor').replaceChildren(editor);};
+document.getElementById('popups').onclick=async()=>{
+  const results=[],check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+  window.qaPopupResults=results;window.qaPopupError=null;
+  try{
+    configure();await card._refresh();
+    let root=card.shadowRoot,cell=root.querySelector('[data-cell]');cell.scrollIntoView({block:'center',inline:'nearest'});
+    await new Promise(requestAnimationFrame);
+    cell.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));
+    check('hover opens a value popup',!root.querySelector('.tooltip').hidden && card._tooltipKey===cell.dataset.cell);
+    root.querySelector('.chart').dispatchEvent(new PointerEvent('pointerleave'));
+    check('pointer leaving closes hover',root.querySelector('.tooltip').hidden);
+    check('scale is above the matrix',!!(root.querySelector('.legend').compareDocumentPosition(root.querySelector('.chart')) & Node.DOCUMENT_POSITION_FOLLOWING));
+    check('cells are static table cells without tab stops',root.querySelector('.matrix').getAttribute('role')==='table' && !root.querySelector('button[data-cell],[data-cell][tabindex]'));
+    cell.click();check('click does not open or pin a value',root.querySelector('.tooltip').hidden && !card._tooltipKey);
+    cell.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+    check('arrow keys do not select cells',!root.activeElement?.dataset.cell && !card._selected);
+    cell.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'touch'}));
+    check('touch does not open a value popup',root.querySelector('.tooltip').hidden);
+    cell.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));
+    root.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    check('Escape dismisses hover',root.querySelector('.tooltip').hidden);
+    root.querySelector('[data-insight="data"]').click();await new Promise(requestAnimationFrame);
+    check('information opens',root.querySelector('.insight-popup').matches(':popover-open'));
+    await card._refresh();root=card.shadowRoot;await new Promise(requestAnimationFrame);
+    check('information survives refresh',root.querySelector('.insight-popup').matches(':popover-open'));
+    root.querySelector('[data-period="menu"]').click();await new Promise(requestAnimationFrame);
+    check('period closes information',!root.querySelector('.insight-popup').matches(':popover-open') && root.querySelector('.period-menu').matches(':popover-open'));
+    root.querySelector('[data-insight="data"]').click();await new Promise(requestAnimationFrame);
+    check('information closes period',root.querySelector('.insight-popup').matches(':popover-open') && !root.querySelector('.period-menu').matches(':popover-open'));
+    root.querySelector('[data-insight-close]').click();
+    check('close button dismisses information',!root.querySelector('.insight-popup').matches(':popover-open'));
+    root.querySelector('[data-insight="data"]').click();
+    check('quiet card contains no explanatory rows',!root.querySelector('.subtitle,.hint,.detail,.detail-extra,.missing-swatch'));
+    document.getElementById('popups').textContent=`Popups: ${results.length} controles geslaagd`;
+  }catch(error){window.qaPopupError=error.message;document.getElementById('popups').textContent='Popupcontrole mislukt';}
+};
+document.getElementById('colors').onclick=async()=>{
+  const results=[],check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+  window.qaColorResults=results;window.qaColorError=null;
+  try{
+    configure();await card._refresh();
+    const formEditor=await card.constructor.getConfigElement();formEditor.setConfig(card._config);formEditor.hass=qaHass;
+    formEditor.addEventListener('config-changed',e=>card.setConfig(e.detail.config));
+    document.getElementById('editor').replaceChildren(formEditor);
+    const form=formEditor.shadowRoot.querySelector('ha-form');
+    for(const [name,hex] of [['low_color','#204060'],['high_color','#c08040']]){
+      const input=form.querySelector('[name="'+name+'"]');check(name+' uses a color picker',input.type==='color');
+      input.value=hex;input.dispatchEvent(new Event('change',{bubbles:true}));await card._refresh();
+    }
+    check('editor saves RGB arrays',JSON.stringify(card._config.low_color)==='[32,64,96]' && JSON.stringify(card._config.high_color)==='[192,128,64]');
+    const ramp=getComputedStyle(card.shadowRoot.querySelector('.ramp')).backgroundImage;
+    check('scale displays both selected colors',ramp.includes('rgb(32, 64, 96)') && ramp.includes('rgb(192, 128, 64)'));
+    const cells=[...card.shadowRoot.querySelectorAll('[data-cell]')].filter(cell=>!cell.classList.contains('missing'));
+    check('matrix redraws with selected colors',cells.length>0 && cells.every(cell=>!!cell.style.backgroundColor));
+    document.getElementById('colors').textContent='Kleurkeuze: '+results.length+' controles geslaagd';
+  }catch(error){window.qaColorError=error.message;document.getElementById('colors').textContent='Kleurcontrole mislukt';}
+};
+document.getElementById('audit').onclick=async()=>{
+  const results=[],check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+  window.qaAuditResults=results;window.qaAuditError=null;
+  const initialZone=qaHass.config.time_zone;
+  try{
+    configure();await card._refresh();
+    check('hourly statistics load',card._status==='ready' && card._data.source==='statistics' && card._rows.length>=28);
+    const known=card._rows.flatMap(row=>row.cells).filter(cell=>cell.value!=null);
+    check('statistics retain numeric values and gaps',known.length>600 && known.length<card._rows.length*24);
+    const before=card._data;offline=true;await card._refresh();
+    check('failed refresh keeps previous matrix',card._status==='error' && card._data===before && !!card.shadowRoot.querySelector('.retry'));
+    check('failure reports stale values',card.shadowRoot.textContent.includes('Vorige gegevens'));
+    offline=false;await card._refresh();check('retry recovers',card._status==='ready' && !card.shadowRoot.querySelector('.retry'));
+    configure('consumption');await card._refresh();
+    check('converted counter statistics load in kWh',card._status==='ready' && card._data.source==='statistics' && card._data.unit==='kWh');
+    check('counter information includes a total',!!card.shadowRoot.querySelector('[data-metric="total"]'));
+    configure('consumption','empty');await card._refresh();
+    check('empty counter response shows no data, not an error',card._status==='ready' && card._data.intervals.length===0 && !card.shadowRoot.querySelector('.retry'));
+    check('empty data has no numeric cells',!card._rows.flatMap(row=>row.cells).some(cell=>cell.value!=null));
+    configure('average','history');await card._refresh();
+    check('history fallback loads',card._status==='ready' && card._data.source==='history');
+    check('history gaps stay missing',!!card.shadowRoot.querySelector('.cell.missing:not(.outside)'));
+    configure();await card._refresh();
+    card.shadowRoot.querySelector('[data-period-option="week"]').click();await card._refresh();
+    check('calendar week follows the selected period',card._periodMode==='week' && card._rows.length>=1 && card._rows.length<=7);
+    card.shadowRoot.querySelector('[data-period="previous"]').click();await card._refresh();
+    check('previous calendar week has seven days',card._rows.length===7 && card._periodOffset===-1);
+    card.shadowRoot.querySelector('[data-period="now"]').click();await card._refresh();
+    check('Now returns to the current period',card._periodOffset===0);
+    card.setConfig({...card._config,hours_to_show:8760});await card._refresh();
+    check('a year renders without inflating dashboard height',card._rows.length>=365 && card.getCardSize()<=18 && card.shadowRoot.querySelector('.matrix-scroll').clientHeight<=800);
+    qaHass.config.time_zone='UTC';card.hass=qaHass;await card._refresh();
+    check('timezone changes rebuild the matrix',card._zone==='UTC' && card._status==='ready');
+    check('large matrix has no clickable cells',!card.shadowRoot.querySelector('button[data-cell],[data-cell][tabindex]'));
+    document.getElementById('audit').textContent='Gegevens: '+results.length+' controles geslaagd';
+  }catch(error){window.qaAuditError=error.message;document.getElementById('audit').textContent='Gegevenscontrole mislukt';}
+  finally{qaHass.config.time_zone=initialZone;configure();await card._refresh();}
+};
+document.getElementById('config-check').onclick=async()=>{
+  const results=[],check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+  window.qaConfigResults=results;window.qaConfigError=null;
+  try{
+    configure();await card._refresh();
+    const edited=await card.constructor.getConfigElement();edited.setConfig(card._config);edited.hass=qaHass;
+    edited.addEventListener('config-changed',event=>{try{card.setConfig(event.detail.config);window.qaPreviewError=null;}catch(error){window.qaPreviewError=error.message;}});
+    document.getElementById('editor').replaceChildren(edited);
+    const form=edited.shadowRoot.querySelector('ha-form'),change=(name,value)=>{
+      const input=form.querySelector(`[name="${name}"]`);if(!input)throw Error('Missing field '+name);
+      if(input.type==='checkbox')input.checked=value;else input.value=value;
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+    };
+    check('four native expandable groups',form.querySelectorAll('details').length===4);
+    const matrix=form.querySelector('[data-field="matrix_settings"]');matrix.open=true;
+    const title=form.querySelector('[name="title"]');title.focus();change('title','Configured heatmap');await card._refresh();
+    check('editor title changes the preview',card.shadowRoot.querySelector('h2').textContent==='Configured heatmap');
+    check('native form and focus survive edits',edited.shadowRoot.querySelector('ha-form')===form && edited.shadowRoot.activeElement===title);
+    check('group expansion survives edits',matrix.open);
+    change('show_title',false);change('show_legend',false);change('show_navigation',false);change('show_labels',false);await card._refresh();
+    check('title and legend can be hidden',!card.shadowRoot.querySelector('h2,.legend'));
+    check('navigation can be hidden while info stays available',!card.shadowRoot.querySelector('[data-period="menu"]') && !!card.shadowRoot.querySelector('[data-insight="data"]'));
+    check('axis labels can be hidden',getComputedStyle(card.shadowRoot.querySelector('.day')).display==='none');
+    change('cell_width','7');change('cell_height','18');change('cell_gap','0');change('border_radius','0');change('max_height','200');await card._refresh();
+    const cell=card.shadowRoot.querySelector('[data-cell]');
+    check('cell dimensions and corners update',cell.getBoundingClientRect().height===18 && getComputedStyle(cell).borderRadius==='0px');
+    check('maximum height bounds the scroll area',card.shadowRoot.querySelector('.matrix-scroll').clientHeight<=200);
+    change('scale_min','0');change('scale_max','600');await card._refresh();
+    change('show_legend',true);change('color_mode','gradient');await card._refresh();
+    check('gradient controls replace endpoint fields',!!form.querySelector('[name="gradient_mode"]') && !form.querySelector('[name="low_color"]'));
+    check('switching modes seeds stops from the configured bounds',card._config.gradient_stops[0].value===0 && card._config.gradient_stops[1].value===600);
+    form.querySelector('[data-object-add="gradient_stops"]').click();await card._refresh();
+    check('native stop list adds rows',card._config.gradient_stops.length===3);
+    change('gradient_mode','steps');change('gradient_stops.0.color','#204060');await card._refresh();
+    check('stop color and hard transitions update the scale',card._config.gradient_mode==='steps' && getComputedStyle(card.shadowRoot.querySelector('.ramp')).backgroundImage.includes('rgb(32, 64, 96)') && card.shadowRoot.querySelector('[data-cell]:not(.missing)').style.backgroundColor==='rgb(32, 64, 96)');
+    change('gradient_stops.1.value','0');
+    check('invalid stops show an error without losing input',!edited.shadowRoot.querySelector('.error').hidden && form.querySelector('[name="gradient_stops.1.value"]').value==='0' && !!window.qaPreviewError);
+    change('gradient_stops.1.value','600');await card._refresh();
+    check('correcting a stop clears validation',edited.shadowRoot.querySelector('.error').hidden && !window.qaPreviewError);
+    form.querySelector('[data-object-remove="2"]').click();await card._refresh();check('native stop list removes rows',card._config.gradient_stops.length===2);
+    change('color_mode','scale');await card._refresh();check('switching back preserves endpoint settings',card._config.scale_min===0 && card._config.scale_max===600 && !!form.querySelector('[name="low_color"]'));
+    change('scale_min','');change('scale_max','');await card._refresh();check('optional bounds can be cleared',!('scale_min' in card._config) && !('scale_max' in card._config));
+    const original=qaHass.language;qaHass.language='en';qaHass.locale.language='en';edited.hass=qaHass;
+    check('editor groups and labels follow the HA language',form.querySelector('[data-field="matrix_settings"] summary').textContent==='Grid appearance');
+    qaHass.language=original;qaHass.locale.language=original;edited.hass=qaHass;
+    check('cells remain static',!card.shadowRoot.querySelector('button[data-cell],[data-cell][tabindex]'));
+    document.getElementById('config-check').textContent='Editor: '+results.length+' controles geslaagd';
+  }catch(error){window.qaConfigError=error.message;document.getElementById('config-check').textContent='Editorcontrole mislukt';}
+};
+document.getElementById('grouping-check').onclick=async()=>{
+  const results=[],check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+  window.qaGroupingResults=results;window.qaGroupingError=null;
+  try{
+    configure('consumption');await card._refresh();
+    const edited=await card.constructor.getConfigElement();edited.setConfig(card._config);edited.hass=qaHass;
+    edited.addEventListener('config-changed',event=>card.setConfig(event.detail.config));document.getElementById('editor').replaceChildren(edited);
+    const form=edited.shadowRoot.querySelector('ha-form');
+    const total=()=>card._rows.flatMap(row=>row.cells).reduce((sum,cell)=>sum+(cell.value??0),0),expected=total();
+    for(const [period,count] of [['hour',24],['day',7],['week',53],['month',12]]){
+      const select=form.querySelector('[name="aggregation_period"]');select.value=period;select.dispatchEvent(new Event('change',{bubbles:true}));await card._refresh();
+      check(period+' uses native editor selection',card._config.aggregation_period===period && edited.shadowRoot.querySelector('ha-form')===form);
+      check(period+' changes columns and labels',card._rows.every(row=>row.cells.length===count) && card.shadowRoot.querySelector('.matrix').getAttribute('aria-colcount')===String(count+1));
+      check(period+' retains consumption total',Math.abs(total()-expected)<1e-8);
+      check(period+' keeps static cells and info',!card.shadowRoot.querySelector('button[data-cell],[data-cell][tabindex]') && !!card.shadowRoot.querySelector('[data-metric="total"]'));
+      const cell=card.shadowRoot.querySelector('[data-cell]:not(.missing)');cell.scrollIntoView({block:'center',inline:'nearest'});await new Promise(requestAnimationFrame);
+      cell.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));
+      check(period+' shows period and value on hover',!card.shadowRoot.querySelector('.tooltip').hidden && !/undefined|Invalid Date/.test(card.shadowRoot.querySelector('.tooltip').textContent));
+    }
+    configure('average','history');card.setConfig({...card._config,aggregation_period:'day'});await card._refresh();
+    check('day averages support history with gaps',card._data.source==='history' && card._rows.flatMap(row=>row.cells).some(cell=>cell.partial));
+    document.getElementById('grouping-check').textContent='Groepering: '+results.length+' controles geslaagd';
+  }catch(error){window.qaGroupingError=error.message;document.getElementById('grouping-check').textContent='Groeperingcontrole mislukt';}
+};
+configure();
+</script></body></html>

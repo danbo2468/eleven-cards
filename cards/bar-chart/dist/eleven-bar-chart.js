@@ -147,30 +147,176 @@ function graphStyles() {
   `;
 }
 
+// ../../shared/ui-button.js
+// Native controls: text/attributes are escaped; content is trusted, caller-owned HTML.
+function uiEscape(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function uiAttributes(values={}){
+ return Object.entries(values).map(([key,value])=>{
+  if(!/^[a-zA-Z_:][\w:.-]*$/.test(key)||/^on/i.test(key))throw Error('Invalid UI attribute: '+key);
+  if(value==null)return '';
+  if(['disabled','hidden','required','autofocus','multiple','readonly'].includes(key))return value?` ${key}`:'';
+  return ` ${key}="${uiEscape(value)}"`;
+ }).join('');
+}
+function uiButton({text='',content,label,title,variant='icon',className='',type='button',href,disabled=false,attrs={}}={}){
+ const classes=className?` class="${uiEscape(className)}"`:'';
+ const body=content??uiEscape(text),attributes=uiAttributes({...attrs,...(label==null?{}:{'aria-label':label}),...(title==null?{}:{title}),...(disabled?{disabled:true}:{})});
+ return href==null?`<button type="${uiEscape(type)}"${classes} data-ui-button="${uiEscape(variant)}"${attributes}>${body}</button>`:`<a${classes} data-ui-button="${uiEscape(variant)}" href="${uiEscape(href)}"${attributes}>${body}</a>`;
+}
+function uiButtonStyles(){return `
+[data-ui-button]{display:flex;align-items:center;justify-content:center;box-sizing:border-box;font:inherit;font-size:12px;font-weight:400;padding:0;border:0;border-radius:4px;background:transparent;color:var(--primary-text-color,#20252b);text-decoration:none;cursor:pointer;flex:none}
+[data-ui-button="icon"]{width:32px;height:32px}
+[data-ui-button]:not(:disabled):hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
+[data-ui-button]:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+[data-ui-button="icon"]:focus-visible{background:var(--secondary-background-color,#eee)}
+[data-ui-button]:disabled{opacity:.35;cursor:default}
+[data-ui-button="surface"]{height:auto;width:100%;justify-content:space-between;gap:8px;min-height:34px;text-align:start;padding:6px 8px;border-radius:5px;background:var(--secondary-background-color,#eee)}
+[data-ui-button="surface"][aria-checked="true"],[data-ui-button="surface"][aria-pressed="true"]{color:var(--primary-color,#2196f3);background:color-mix(in srgb,var(--primary-color,#2196f3) 14%,var(--ha-card-background,var(--card-background-color,#fff)));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary-color,#2196f3) 55%,transparent)}
+[data-ui-button="text"]{min-height:30px;height:auto;width:auto;border-radius:5px}
+[data-ui-button="close"]{width:30px;height:30px;min-height:30px;border-radius:5px;font-size:20px;color:inherit}
+`;}
+
+// ../../shared/ui-legend.js
+
+// The caller owns each item's trusted HTML (swatch, label and optional value).
+function uiLegendButton({id,visible=true,content='',title='',className='legend-item',attrs={}}={}){
+ return `<button type="button" class="${uiEscape(className)}"${uiAttributes({...attrs,'data-ui-legend':id,'aria-pressed':visible,title})}>${content}</button>`;
+}
+function uiLegend({items=[],className='legend',attrs={},afterContent=''}={}){
+ return `<div class="${uiEscape(className)}"${uiAttributes(attrs)}>${items.map(uiLegendButton).join('')}${afterContent}</div>`;
+}
+function cancelUILegendClicks(host){
+ for(const timer of host._legendClickTimers?.values()??[])clearTimeout(timer);
+ host._legendClickTimers?.clear();
+}
+function focusUILegend(host,id,selector='[data-ui-legend]',getId=button=>button.dataset.uiLegend){
+ queueMicrotask(()=>[...host.shadowRoot.querySelectorAll(selector)].find(button=>getId(button)===id)?.focus({preventScroll:true}));
+}
+function bindUILegend(host,{selector='[data-ui-legend]',getId=button=>button.dataset.uiLegend,hint='',toggle,isolate}={}){
+ for(const button of host.shadowRoot.querySelectorAll?.(selector)??[]){
+  const id=getId(button);
+  if(hint&&!button.title?.includes(hint))button.title=[button.title,hint].filter(Boolean).join(' ');
+  if(hint)button.setAttribute('aria-description',hint);
+  button.setAttribute('aria-keyshortcuts','Shift+Enter Shift+Space');
+  button.onclick=event=>{
+   clearTimeout(host._legendClickTimers?.get(id));host._legendClickTimers?.delete(id);
+   if(event.shiftKey||event.detail>1){event.preventDefault();isolate?.(id);return;}
+   if(!event.detail){(toggle??isolate)?.(id);return;}
+   // Wait for the second click before a rerender replaces the clicked button.
+   if(toggle){const config=host._config;host._legendClickTimers??=new Map();host._legendClickTimers.set(id,setTimeout(()=>{host._legendClickTimers.delete(id);if(host._config===config)toggle(id);},300));}
+  };
+  button.ondblclick=event=>event.preventDefault();
+  button.onkeydown=event=>{if(event.shiftKey&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopPropagation();isolate?.(id);}};
+ }
+}
+
+// ../../shared/ui-tabs.js
+function uiTabs({id,label,items,selected,className='',panelClassName=''}={}){
+ if(typeof id!=='string'||!id||!items?.length||items.some(item=>typeof item.value!=='string'||!item.value)||new Set(items.map(item=>item.value)).size!==items.length)throw Error('Tabs need an id and distinct text values.');
+ const active=items.find(item=>item.value===selected&&!item.disabled)??items.find(item=>!item.disabled);
+ const tabId=value=>`${id}-tab-${encodeURIComponent(value)}`,panelId=value=>`${id}-panel-${encodeURIComponent(value)}`;
+ const bar=`<div${uiAttributes({class:className||null,'data-ui-tabs':'',role:'tablist','aria-label':label})}>${items.map(item=>uiButton({variant:'tab',text:item.label,disabled:item.disabled,attrs:{role:'tab',id:tabId(item.value),'data-ui-tab':item.value,'aria-controls':panelId(item.value),'aria-selected':item===active,tabindex:item===active?0:-1,...item.tabAttrs}})).join('')}</div>`;
+ const panels=items.map(item=>`<section${uiAttributes({class:[panelClassName,item.className].filter(Boolean).join(' ')||null,id:panelId(item.value),role:'tabpanel','aria-labelledby':tabId(item.value),'data-ui-tab-panel':item.value,...item.panelAttrs,hidden:item!==active})}>${item.content??''}</section>`).join('');
+ return bar+panels;
+}
+function bindUITabs({tabs,panels,onSelect=()=>{}}){
+ const buttons=[...tabs],sections=[...panels],cleanups=[];
+ const select=(value,{focus=false,notify=true}={})=>{
+  const target=buttons.find(tab=>tab.dataset.uiTab===value&&!tab.disabled);if(!target)return false;
+  for(const tab of buttons){const active=tab===target;tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;}
+  for(const panel of sections)panel.hidden=panel.dataset.uiTabPanel!==value;
+  if(focus)target.focus({preventScroll:true});if(notify)onSelect(value,target);return true;
+ };
+ for(const tab of buttons){
+  const click=()=>select(tab.dataset.uiTab,{focus:true});
+  const keydown=e=>{
+   if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
+   e.preventDefault();e.stopPropagation();const enabled=buttons.filter(button=>!button.disabled),index=enabled.indexOf(tab);
+   const next=e.key==='Home'?0:e.key==='End'?enabled.length-1:(index+(e.key==='ArrowRight'?1:-1)+enabled.length)%enabled.length;
+   if(enabled[next])select(enabled[next].dataset.uiTab,{focus:true});
+  };
+  tab.onclick=click;tab.onkeydown=keydown;
+  cleanups.push(()=>{if(tab.onclick===click)tab.onclick=null;if(tab.onkeydown===keydown)tab.onkeydown=null;});
+ }
+ return {select,disconnect(){cleanups.splice(0).forEach(remove=>remove());}};
+}
+function uiTabsStyles(){return `
+[data-ui-tabs]{display:flex;align-items:flex-end;gap:8px;border-bottom:1px solid var(--divider-color,#ddd)}
+[data-ui-tabs] [role="tab"]{flex:1;justify-content:center;min-width:0;min-height:36px;padding:8px 3px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--secondary-text-color,#666);white-space:nowrap}
+[data-ui-tabs] [role="tab"]:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 5%,var(--ha-card-background,var(--card-background-color,#fff)));color:var(--primary-text-color,#20252b)}
+[data-ui-tabs] [role="tab"][aria-selected="true"]{border-bottom-color:var(--primary-color,#2196f3);color:var(--primary-color,#2196f3);font-weight:600}
+[data-ui-tab-panel][hidden]{display:none!important}
+`;}
+
+// ../../shared/ui-popup.js
+function uiPopup({id,title,label=title,closeLabel='Close',content='',className='',attrs={},closeAttrs={}}){
+ return `<div${uiAttributes({id,class:className||null,'data-ui-popup':'',popover:'auto',role:'dialog','aria-label':label,...attrs})}><div class="ui-popup-heading"><strong>${uiEscape(title)}</strong>${uiButton({variant:'close',content:'<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>',label:closeLabel,attrs:{'data-ui-popup-close':'',...closeAttrs}})}</div>${content}</div>`;
+}
+function bindUIPopupPosition({trigger,popup,isRequested,onShow,ready,width=380,maxHeight=560}){
+ let active=true;
+ const position=()=>{
+  if(!active||!isRequested())return;
+  const box=trigger.getBoundingClientRect();
+  if(!box.width||!box.height){popup.style.visibility='hidden';return;}
+  const actualWidth=Math.min(width,window.innerWidth-16);
+  popup.style.width=actualWidth+'px';popup.style.maxHeight=Math.min(maxHeight,window.innerHeight-16)+'px';
+  popup.style.visibility='';onShow?.();
+  const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
+  popup.style.left=Math.max(8,Math.min(box.right-actualWidth,window.innerWidth-actualWidth-8))+'px';
+  popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
+ };
+ if(ready?.then)ready.then(position,()=>{});
+ const observer=typeof ResizeObserver==='function'?new ResizeObserver(position):null;
+ observer?.observe(trigger);
+ return {position,disconnect(){active=false;observer?.disconnect();}};
+}
+// Domain state lives in callbacks; this controller also works without a card host.
+function bindUIPopup({trigger,popup,container=popup,ready,isRequested,isCurrent=()=>true,beforeOpen=()=>{},onOpen=()=>{},onClose=()=>{},onShown=()=>{},onToggle=()=>{},focusTarget,closeWhenAnchorHidden=false}){
+ let requested=false,pending=false,focusPending=false,pointerWasOpen;
+ const wantsOpen=isRequested??(()=>requested),native=typeof popup.showPopover==='function';
+ const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
+ trigger.setAttribute('aria-haspopup','dialog');if(popup.id)trigger.setAttribute('aria-controls',popup.id);trigger.setAttribute('aria-expanded',String(isOpen()));
+ const cleanups=[],listen=(target,type,handler,capture=false)=>{target?.addEventListener?.(type,handler,capture);cleanups.push(()=>target?.removeEventListener?.(type,handler,capture));};
+ const property=(target,key,handler)=>{if(!target)return;target[key]=handler;cleanups.push(()=>{if(target[key]===handler)target[key]=null;});};
+ const closeButton=popup.querySelector('[data-ui-popup-close]');
+ const placement=bindUIPopupPosition({trigger,popup,ready,isRequested:wantsOpen,onShow:()=>{
+  pending=false;if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
+  if(focusPending){(focusTarget?.()??closeButton)?.focus({preventScroll:true});focusPending=false;}
+  onShown();
+ }});
+ const close=(focus=false)=>{
+  requested=false;pending=false;focusPending=false;onClose();trigger.setAttribute('aria-expanded','false');
+  if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');
+  if(focus)trigger.focus({preventScroll:true});
+ };
+ const open=(focus=true)=>{beforeOpen();requested=true;pending=true;focusPending=focus;onOpen(focus);trigger.setAttribute('aria-expanded','true');placement.position();};
+ property(trigger,'onpointerdown',()=>{pointerWasOpen=wantsOpen();});
+ property(trigger,'onpointercancel',()=>{pointerWasOpen=undefined;});
+ property(trigger,'onclick',()=>{const wasOpen=pointerWasOpen??wantsOpen();pointerWasOpen=undefined;wasOpen?close(true):open();});
+ property(closeButton,'onclick',()=>close(true));
+ listen(popup,'keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);}});
+ listen(popup,'toggle',e=>{if(!isCurrent())return;const opened=e.newState==='open';if(!opened){if(wantsOpen())onClose();pending=false;focusPending=false;}requested=opened;trigger.setAttribute('aria-expanded',String(opened));onToggle(opened);});
+ listen(window,'resize',()=>{if(wantsOpen()){if(closeWhenAnchorHidden&&trigger.getClientRects?.().length===0)close();else placement.position();}});
+ listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
+ listen(document,'pointerdown',e=>{if((!native||pending)&&(isOpen()||wantsOpen())&&!e.composedPath().includes(container))close();});
+ return {open,close,isOpen,position:placement.position,disconnect(){placement.disconnect();cleanups.splice(0).forEach(remove=>remove());}};
+}
+function uiPopupStyles(){return `
+[data-ui-popup]{display:none;position:fixed;inset:auto;margin:0;padding:8px 12px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain;z-index:20;max-width:calc(100vw - 16px);border:1px solid var(--divider-color,#ddd);border-radius:10px;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b);font:inherit;font-size:12px;line-height:1.35;box-shadow:0 8px 28px #0004}
+[data-ui-popup]:popover-open,[data-ui-popup][data-fallback-open]{display:block}
+[data-ui-popup] [hidden]{display:none!important}
+.ui-popup-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:30px}
+.ui-popup-heading>strong{font-size:14px;font-weight:600}
+.ui-popup-heading [data-ui-popup-close]{display:grid;place-items:center;width:30px;height:30px;min-height:30px;padding:0;line-height:1;flex:none}
+.ui-popup-heading [data-ui-popup-close] svg{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+`;}
+
 // ../../shared/card-header.js
 // Shared markup stays in each card's shadow root: native links and existing
 // data-zoom handlers work without cross-bundle custom-element registration.
 const headerEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function bindCardPopupPosition(host,trigger,popup,isRequested,show){
- let active=true;
- const position=()=>{
-  if(!active||!isRequested())return;
-  const box=trigger.getBoundingClientRect();
-  // A newly inserted ha-card may not have rendered its slot yet. Never anchor
-  // an open popup to its temporarily empty trigger rectangle at (0, 0).
-  if(!box.width||!box.height){popup.style.visibility='hidden';return;}
-  const width=Math.min(380,window.innerWidth-16);
-  popup.style.width=width+'px';popup.style.maxHeight=Math.min(560,window.innerHeight-16)+'px';
-  popup.style.visibility='';show?.();
-  const height=popup.getBoundingClientRect().height,below=window.innerHeight-box.bottom-8,above=box.top-8;
-  popup.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';
-  popup.style.top=Math.max(8,Math.min(below>=height||below>=above?box.bottom+6:box.top-height-6,window.innerHeight-height-8))+'px';
- };
- const ready=host.shadowRoot.querySelector('ha-card')?.updateComplete;
- if(ready?.then)ready.then(position,()=>{});
- const observer=typeof ResizeObserver==='function'?new ResizeObserver(position):null;
- observer?.observe(trigger);
- return {position,disconnect(){active=false;observer?.disconnect();}};
+ return bindUIPopupPosition({trigger,popup,isRequested,onShow:show,ready:host.shadowRoot.querySelector('ha-card')?.updateComplete});
 }
 // Native toggle events are asynchronous. Clear the other popup's restore
 // state synchronously, also for browsers using the attribute fallback.
@@ -190,33 +336,29 @@ function cardHeaderIcon(name){
 }
 function cardHeader({title,showTitle=true,ready=false,historyUrl,language='en',periods={},zoomState={in:true,out:true,reset:true,zoomed:false},information=''}){
  const nl=language.startsWith('nl'),label=nl?['Inzoomen','Uitzoomen','Zoom herstellen','Open in Home Assistant Geschiedenis']:['Zoom in','Zoom out','Reset zoom','Open in Home Assistant History'];
- const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['out','in','reset'].map(action=>`<button type="button" data-zoom="${action}"${zoomState[action]?'':' disabled'} title="${label[['in','out','reset'].indexOf(action)]}" aria-label="${label[['in','out','reset'].indexOf(action)]}">${cardHeaderIcon(action)}</button>`).join('')}</div>`:'';
- const group=periods.navigation||zoom?`<div class="chart-controls" role="group" aria-label="${nl?'Periode en zoom':'Period and zoom'}">${periods.navigation??''}${zoom}</div>`:'';
+ const zoom=ready?`<div class="zoom-controls" role="group" aria-label="Zoom">${['out','in','reset'].map(action=>uiButton({content:cardHeaderIcon(action),disabled:!zoomState[action],title:label[['in','out','reset'].indexOf(action)],label:label[['in','out','reset'].indexOf(action)],attrs:{'data-zoom':action}})).join('')}</div>`:'';
+ const group=periods.picker||periods.navigation?`<div class="chart-controls" role="group" aria-label="${nl?'Tijdvak':'Timeframe'}">${periods.picker??''}${periods.navigation??''}</div>`:'';
  const showZoomStatus=zoomState.zoomed&&!periods.picker;
- return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${periods.picker??''}${group}<div class="chart-links"><a class="history-link" href="${headerEscape(historyUrl)}" title="${label[3]}" aria-label="${label[3]}">${cardHeaderIcon('history')}</a>${information}</div></div></header>${showZoomStatus?`<div class="chart-context"><div class="chart-range"><span class="zoom-status">${nl?'Ingezoomd':'Zoomed in'}</span></div></div>`:''}`;
+ return `<header class="card-header">${showTitle&&title?`<h2>${headerEscape(title)}</h2>`:''}<div class="header-actions">${group}${zoom}<div class="chart-links" role="group" aria-label="${nl?'Geschiedenis en informatie':'History and information'}">${uiButton({href:historyUrl??'',className:'history-link',content:cardHeaderIcon('history'),title:label[3],label:label[3]})}${information}</div></div></header>${showZoomStatus?`<div class="chart-context"><div class="chart-range"><span class="zoom-status">${nl?'Ingezoomd':'Zoomed in'}</span></div></div>`:''}`;
 }
-function cardHeaderStyles(){return `
+function cardHeaderStyles(){return uiButtonStyles()+uiPopupStyles()+`
 .card-header{display:flex;align-items:flex-start;flex-wrap:wrap;gap:8px;min-height:32px;flex:none;margin:-6px -4px 10px 0}
 .card-header h2{flex:1 1 110px;min-width:0;margin:4.75px 0 0;font-size:18px;line-height:1.25;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
 .header-actions{--chart-action-gap:8px;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:var(--chart-action-gap);flex:0 1 auto;min-width:0;max-width:100%;margin-inline-start:auto}
-.chart-controls{display:flex;align-items:center;flex-wrap:wrap;gap:0;max-width:100%}
-.chart-links{display:flex;align-items:center;gap:var(--chart-action-gap);flex:none}
+.chart-controls{display:flex;align-items:center;gap:0;min-width:0;max-width:100%}
+.chart-links{display:flex;align-items:center;gap:0;flex:none}
 .zoom-controls{display:flex;gap:0;position:relative}
-.header-actions button,.history-link{display:flex;align-items:center;justify-content:center;box-sizing:border-box;font:inherit;font-size:12px;font-weight:400;width:32px;height:32px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--primary-text-color,#20252b);text-decoration:none;cursor:pointer;flex:none}
-.chart-controls,.chart-links>.history-link{background:var(--secondary-background-color,#eee);border-radius:5px}
-.chart-controls button:not(:disabled):hover,.chart-links>.history-link:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
+.chart-controls,.zoom-controls,.chart-links{background:var(--secondary-background-color,#eee);border-radius:5px}
 .chart-controls>[data-period="now"]{width:36px}
-.chart-controls>[data-period="next"]+.zoom-controls{margin-inline-start:8px;padding-inline-start:8px}
-.chart-controls>[data-period="next"]+.zoom-controls::before{content:"";position:absolute;inset-inline-start:0;top:8px;height:16px;width:1px;background:var(--divider-color,#ddd)}
-.header-actions button:disabled{opacity:.35;cursor:default}
-.header-actions button:hover,.history-link:hover{background:var(--secondary-background-color,#eee)}
-.header-actions button:focus-visible,.history-link:focus-visible{background:var(--secondary-background-color,#eee);outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
+.chart-controls>.period-controls{position:relative;margin-inline-end:8px;padding-inline-end:8px}
+.chart-controls>.period-controls::after{content:"";position:absolute;inset-inline-end:0;top:8px;height:16px;width:1px;background:var(--divider-color,#ddd)}
 .header-actions svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
-.period-menu,.insight-popup{display:none;position:fixed;inset:auto;margin:0;padding:8px 12px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain;z-index:20;max-width:calc(100vw - 16px);border:1px solid var(--divider-color,#ddd);border-radius:10px;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#20252b);font:inherit;font-size:12px;line-height:1.35;box-shadow:0 8px 28px #0004}
-.chart-popup-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:30px}
-.chart-popup-heading>strong{font-size:14px;font-weight:600}
-.period-menu .chart-popup-heading>button,.insight-popup .chart-popup-heading>button{display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:0;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;font-size:20px;font-weight:400;flex:none;cursor:pointer}
 `;}
+
+// ../../shared/request.js
+function retryDelay(failures, base = 60000, maximum = 300000) {
+  return Math.min(maximum, base * 2 ** Math.max(0, failures - 1));
+}
 
 // ../../shared/periods.js
 // Calendar periods use the Home Assistant timezone, including DST boundaries.
@@ -235,6 +377,11 @@ function periodMidnight(nominal,zone){
  while(high-low>1000){const mid=Math.floor((low+high)/2000)*1000,p=periodLocalParts(mid,zone);if(Date.UTC(p.year,p.month-1,p.day)>=nominal)high=mid;else low=mid;}
  return high;
 }
+function calendarDayStart(key,zone='UTC'){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(key))return NaN;
+ const nominal=Date.parse(`${key}T00:00:00Z`);
+ return Number.isFinite(nominal)&&new Date(nominal).toISOString().slice(0,10)===key?periodMidnight(nominal,zone||'UTC'):NaN;
+}
 function graphPeriodBounds(t,period,zone='UTC'){
  zone ||= 'UTC';const p=periodLocalParts(t,zone),size={minute:60000,quarter_hour:900000,hour:3600000}[period];
  if(size){const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second),a=t-(local%size)-(t%1000);return [a,a+size];}
@@ -246,8 +393,84 @@ function graphPeriodBounds(t,period,zone='UTC'){
 }
 const periodCalendarModes=['today','week','month','quarter','year'];
 const periodPresetHours={'1h':1,'6h':6,'12h':12,'24h':24,'48h':48,'7d':168,'14d':336,'30d':720,'90d':2160,'365d':8760};
-function resetGraphPeriod(host){host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;host._periodMenuPending=false;host._insightPending=null;}
+function periodDateTime(t,zone='UTC'){
+ const p=periodLocalParts(t,zone),pad=n=>String(n).padStart(2,'0');
+ return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
+}
+function parsePeriodDateTime(value,zone='UTC',edge='start',previous){
+ if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value))return NaN;
+ if(Number.isFinite(previous)&&periodDateTime(previous,zone)===value)return previous;
+ const nominal=Date.parse(value+'Z');if(!Number.isFinite(nominal)||periodDateTime(nominal,'UTC')!==value)return NaN;
+ // Collect the offsets on both sides of a transition. Reject skipped local
+ // times; repeated times include both occurrences unless editing an existing bound.
+ const candidates=new Set();
+ for(let h=-48;h<=48;h+=6){const sample=nominal+h*3600000,offset=periodLocalEpoch(sample,zone)-sample,candidate=nominal-offset;if(periodDateTime(candidate,zone)===value)candidates.add(candidate);}
+ const times=[...candidates].sort((a,b)=>a-b);return times.length?(edge==='end'?times.at(-1):times[0]):NaN;
+}
+function chooseCustomGraphPeriod(host,start,end){
+ if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>366*86400000)return false;
+ resetGraphPeriod(host);host._periodMode='custom';host._periodHours=(end-start)/3600000;host._periodEnd=end;
+ publishTimeframe(host);host._reloadPeriod();return true;
+}
+function timeframeSyncConfig(config,{draft=false}={}){
+ if(!draft){
+  if(config.sync_timeframe!==undefined&&typeof config.sync_timeframe!=='boolean')throw Error('sync_timeframe must be a boolean. / Tijdvak synchroniseren moet aan of uit zijn.');
+  for(const key of ['hover_sync_group','timeframe_sync_group'])if(config[key]!=null&&typeof config[key]!=='string')throw Error(`${key} must be text. / De synchronisatiegroep moet tekst zijn.`);
+ }
+ return {sync_timeframe:config.sync_timeframe??false,hover_sync_group:config.hover_sync_group??config.timeframe_sync_group??''};
+}
+function timeframeGroup(host){return host._config?.sync_timeframe===true?((host._config.hover_sync_group??host._config.timeframe_sync_group)?.trim()||'default'):null;}
+function timeframeGroups(){
+ const root=globalThis.window??globalThis,key=Symbol.for('eleven-cards.timeframe-sync.v1');
+ return root[key]??=new Map();
+}
+function applyTimeframe(host,selection){
+ // Default is a group-wide reset to each card's own configured range (or
+ // native price window), rather than a copy of the sender's hours.
+ if(selection.mode==='configured'&&selection.offset===0){resetGraphPeriod(host);return;}
+ host._sharedTimeframe=selection;
+ Object.assign(host,{_periodMode:selection.mode,_periodHours:selection.hours,_periodEnd:selection.end,_periodOffset:selection.offset,_periodAnchor:selection.anchor});
+}
+function disconnectTimeframeSync(host){
+ host._disconnectTimeframeSync?.();host._disconnectTimeframeSync=null;
+}
+function connectTimeframeSync(host){
+ disconnectTimeframeSync(host);
+ const group=timeframeGroup(host);if(group===null||!host._connected)return;
+ const groups=timeframeGroups();let entry=groups.get(group);
+ if(!entry){entry={selection:null,listeners:new Set()};groups.set(group,entry);}
+ const receive=(selection,source)=>{
+  if(source===host||host._sharedTimeframe===selection)return;
+  applyTimeframe(host,selection);host._reloadPeriod();
+ };
+ entry.listeners.add(receive);
+ host._disconnectTimeframeSync=()=>entry.listeners.delete(receive);
+ // Joining never publishes this card's default over an existing selection.
+ if(entry.selection)applyTimeframe(host,entry.selection);
+}
+function publishTimeframe(host){
+ const group=timeframeGroup(host);if(group===null||!host._connected)return;
+ const entry=timeframeGroups().get(group);if(!entry)return;
+ const selection={group,mode:host._periodMode,hours:host._periodHours??host._config.hours_to_show,
+  end:host._periodEnd,offset:host._periodOffset,anchor:host._periodAnchor,zone:host._hass?.config?.time_zone||'UTC',at:Date.now()};
+ selection.range=localGraphPeriodRange(host,selection.at);
+ entry.selection=selection;applyTimeframe(host,selection);
+ for(const receive of entry.listeners)receive(selection,host);
+}
+function resetGraphPeriod(host){host._sharedTimeframe=null;host._periodMode='configured';host._periodHours=null;host._periodEnd=null;host._periodOffset=0;host._periodAnchor=null;host._periodMenuOpen=false;host._periodMenuPending=false;host._periodCustomDraft=null;host._periodTab=null;host._insightPending=null;}
 function graphPeriodRange(host,now=Date.now()){
+ const shared=host._sharedTimeframe;
+ if(shared&&timeframeGroup(host)===shared.group){
+  // One clock and timezone for the whole group, including separate bundles.
+  // Live selections advance together on the minute; historical ranges stay fixed.
+  if(shared.offset===0&&shared.end==null&&(Math.floor(now/60000)!==Math.floor(shared.at/60000))){
+   shared.at=now;shared.range=localGraphPeriodRange({_periodMode:shared.mode,_periodHours:shared.hours,_periodOffset:0,_hass:{config:{time_zone:shared.zone}}},now);
+  }
+  return {...shared.range};
+ }
+ return localGraphPeriodRange(host,now);
+}
+function localGraphPeriodRange(host,now){
  const mode=host._periodMode,offset=host._periodOffset??0;
  if(periodCalendarModes.includes(mode)){
   const zone=host._hass?.config?.time_zone||'UTC',p=periodLocalParts(host._periodAnchor??now,zone);
@@ -271,10 +494,16 @@ function chooseGraphPeriod(host,value){
  resetGraphPeriod(host);
  host._periodMode=calendar?value:Object.entries(periodPresetHours).find(([,h])=>h===hours)?.[0]??String(value);
  if(!calendar)host._periodHours=hours;
+ publishTimeframe(host);
  return host._reloadPeriod();
 }
 function moveGraphPeriod(host,direction){
  if(![-1,0,1].includes(direction))return;
+ if(host._periodMode==='custom'){
+  if(direction===0){host._periodEnd=null;host._periodOffset=0;}
+  else{const end=(host._periodEnd??Date.now())+direction*host._periodHours*3600000;host._periodEnd=direction>0?Math.min(Date.now(),end):end;host._periodOffset=(host._periodOffset??0)+direction;}
+  host._periodCustomDraft=null;host._periodTab=null;host._sharedTimeframe=null;publishTimeframe(host);return host._reloadPeriod();
+ }
  if(direction===0){host._periodOffset=0;host._periodEnd=null;host._periodAnchor=null;}
  else{
   const previous=host._periodOffset??0;
@@ -286,6 +515,8 @@ function moveGraphPeriod(host,direction){
    host._periodEnd=host._periodOffset===0?null:host._periodAnchor+host._periodOffset*(host._periodHours??host._config.hours_to_show)*3600000;
   }
  }
+ host._sharedTimeframe=null;
+ publishTimeframe(host);
  return host._reloadPeriod();
 }
 
@@ -304,7 +535,7 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
   if(first.month===last.month)return `${first.day===last.day?'':`${first.day}–`}${dayMonth.format(to)}${year}`;
   return `${dayMonth.format(from)}–${dayMonth.format(to)}${year}`;
  };
- if(zoomed||(past&&!['today','week','month','quarter','year'].includes(mode)&&hours<24)){
+ if(mode==='custom'||zoomed||(past&&!['today','week','month','quarter','year'].includes(mode)&&hours<24)){
   const time=format({hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
   if(sameDay){
    const offsets=format({timeZoneName:'shortOffset'}),offset=t=>offsets.formatToParts(t).find(p=>p.type==='timeZoneName')?.value;
@@ -325,7 +556,7 @@ function compactPeriodName({start,end,mode,past,zoomed,hours,name,locale,zone}){
 function periodControls(host,language='en'){
  const active=host.shadowRoot.activeElement;
  if(!host._periodMenuPending)host._periodFocus=null;
- if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
+ if(active?.closest?.('.header-actions'))host._periodFocus=active.dataset.periodTab!=null?`tab:${active.dataset.periodTab}`:active.dataset.customField!=null?`custom:${active.dataset.customField}`:active.dataset.periodOption!=null?`option:${active.dataset.periodOption}`:active.dataset.zoom!=null?`zoom:${active.dataset.zoom}`:active.classList.contains('history-link')?'history':active.dataset.period;
  if(host._config.show_navigation===false){host._periodMenuOpen=false;host._periodMenuPending=false;return {};}
  const previousMenu=host.shadowRoot.querySelector('.period-menu');
  if(previousMenu){
@@ -334,92 +565,121 @@ function periodControls(host,language='en'){
  }
  const nl=language.startsWith('nl'),label=(en,nlText)=>nl?nlText:en,mode=host._periodMode??'configured',past=(host._periodOffset??0)<0;
  const standard=label(`Default (${host._config.hours_to_show} hours)`,`Standaard (${host._config.hours_to_show} uur)`);
- const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`)]);
+ const rolling=[['1h',1],['6h',6],['12h',12],['24h',24],['48h',48],['7d',168],['14d',336],['30d',720],['90d',2160],['365d',8760]].map(([id,hours])=>[id,hours<168?label(`${hours} ${hours===1?'hour':'hours'}`,`${hours} uur`):label(`${hours/24} days`,`${hours/24} dagen`),hours<168?`${hours} ${nl?'u':'h'}`:`${hours/24} d`]);
  const calendar=[['today',label('Today','Vandaag'),label('Day','Dag')],['week',label('This week','Deze week'),label('Week','Week')],['month',label('This month','Deze maand'),label('Month','Maand')],['quarter',label('This quarter','Dit kwartaal'),label('Quarter','Kwartaal')],['year',label('This year','Dit jaar'),label('Year','Jaar')]];
- if(host._periodHours!=null&&!rolling.some(([id])=>id===mode))rolling.push([mode,label(`${host._periodHours} hours`,`${host._periodHours} uur`)]);
- const calendarChoice=calendar.find(([id])=>id===mode),name=mode==='configured'?standard:calendarChoice?.[past?2:1]??rolling.find(([id])=>id===mode)?.[1]??standard;
- const choice=([value,text])=>`<button type="button" role="menuitemradio" aria-checked="${value===mode}" tabindex="-1" data-period-option="${periodEscape(value)}"><span>${periodEscape(text)}</span><span aria-hidden="true">${value===mode?'✓':''}</span></button>`;
+ const calendarChoice=calendar.find(([id])=>id===mode);
+ if(!calendarChoice&&mode!=='configured'&&mode!=='custom'&&host._periodHours!=null&&!rolling.some(([id])=>id===mode))rolling.push([mode,label(`${host._periodHours} hours`,`${host._periodHours} uur`)]);
+ const selectedStandard=label(`Default (${host._periodHours??host._config.hours_to_show} hours)`,`Standaard (${host._periodHours??host._config.hours_to_show} uur)`);
+ const name=mode==='configured'?selectedStandard:calendarChoice?.[past?2:1]??rolling.find(([id])=>id===mode)?.[1]??standard;
+ const tabIds=['rolling','calendar','custom'];
+ const selectedTab=host._periodMenuOpen&&tabIds.includes(host._periodTab)?host._periodTab:mode==='custom'?'custom':calendarChoice?'calendar':'rolling';
+ host._periodTab=selectedTab;
+ const choice=([value,text,compact])=>uiButton({variant:'surface',content:`<span>${periodEscape(compact??text)}</span><span aria-hidden="true">${value===mode?'✓':''}</span>`,attrs:{role:'menuitemradio','aria-checked':value===mode,tabindex:-1,'aria-label':text,title:text,'data-period-option':value}});
+
  const {start,end}=host._status==='ready'&&Number.isFinite(host._viewStart)&&Number.isFinite(host._viewEnd)?{start:host._viewStart,end:host._viewEnd}:graphPeriodRange(host);
  const locale=nl?'nl-NL':'en-GB',zone=host._hass?.config?.time_zone||'UTC';
  const zoomed=host._status==='ready'&&(start>host._start+1||end<host._end-1);
  const compactName=compactPeriodName({start,end,mode,past,zoomed,hours:host._periodHours??host._config.hours_to_show,name,locale,zone});
  const format=new Intl.DateTimeFormat(locale,{timeZone:zone,day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZoneName:'shortOffset'});
  const range=`${format.format(start)} – ${format.format(end)}`;
- return {picker:`<div class="period-controls"><button type="button" class="period-trigger" data-period="menu" aria-haspopup="menu" aria-controls="eleven-period-menu" aria-expanded="${host._periodMenuOpen===true}" title="${periodEscape(range)}" aria-label="${label('Timeframe','Tijdvak')}: ${periodEscape(compactName)}" aria-description="${periodEscape(range)}${zoomed?`. ${label('Zoomed in','Ingezoomd')}`:''}"><span>${periodEscape(compactName)}</span>${cardHeaderIcon('down')}</button><div class="period-menu" id="eleven-period-menu" popover="auto" role="menu" aria-label="${label('Choose a period','Kies een periode')}"><div class="chart-popup-heading"><strong>${label('Timeframe','Tijdvak')}</strong><button type="button" role="menuitem" data-period="close" aria-label="${label('Close','Sluiten')}">×</button></div><div class="period-current-range">${periodEscape(range)}${zoomed?`<span class="zoom-status">${label('Zoomed in','Ingezoomd')}</span>`:''}</div><div class="period-default">${choice(['configured',standard])}</div><div class="period-menu-columns"><div role="group" aria-label="${label('Last','Afgelopen')}"><h3>${label('Last','Afgelopen')}</h3>${rolling.map(choice).join('')}</div><div role="group" aria-label="${label('Calendar','Kalender')}"><h3>${label('Calendar','Kalender')}</h3>${calendar.map(choice).join('')}<p>${label('From the start of the period until now. Use the arrows for previous periods.','Vanaf de start van het tijdvak tot nu. Gebruik de pijlen voor vorige perioden.')}</p></div></div></div></div>`,navigation:`<button type="button" data-period="previous" title="${label('Previous period','Vorige periode')}" aria-label="${label('Previous period','Vorige periode')}">${cardHeaderIcon('previous')}</button><button type="button" data-period="now" title="${label('Return to the current period','Terug naar de huidige periode')}">${label('Now','Nu')}</button><button type="button" data-period="next" title="${label('Next period','Volgende periode')}" aria-label="${label('Next period','Volgende periode')}"${past?'':' disabled'}>${cardHeaderIcon('next')}</button>`};
+ const customRange=graphPeriodRange(host),draft=host._periodCustomDraft??{start:periodDateTime(customRange.start,zone),end:periodDateTime(customRange.end,zone)};
+ const canGoNext=mode==='custom'?host._periodEnd!=null&&customRange.end<Date.now():past;
+ const custom=`<form data-custom-range><div class="period-custom-fields">${[['start',label('Start','Begin')],['end',label('End','Einde')]].map(([key,text])=>`<label>${text}<input type="datetime-local" name="${key}" data-custom-field="${key}" value="${periodEscape(draft[key])}" step="60" required></label>`).join('')}</div><p class="period-custom-zone">${periodEscape(zone)}</p><p class="period-custom-error" role="alert"${draft.error?'':' hidden'}>${periodEscape(draft.error??'')}</p>${uiButton({variant:'surface',type:'submit',text:label('Apply','Toepassen'),attrs:{'data-custom-field':'apply'}})}</form>`;
+ const contents=uiTabs({id:'eleven-period',label:label('Period type','Soort tijdvak'),selected:selectedTab,className:'period-tabs',panelClassName:'period-panel',items:[
+  {value:'rolling',label:label('Last','Afgelopen'),content:`<div class="period-options" role="menu" aria-label="${label('Last','Afgelopen')}">${rolling.map(choice).join('')}</div>`},
+  {value:'calendar',label:label('Calendar','Kalender'),content:`<div class="period-options period-calendar" role="menu" aria-label="${label('Calendar','Kalender')}">${calendar.map(([id,text])=>choice([id,text])).join('')}</div>`},
+  {value:'custom',label:label('Custom range','Eigen bereik'),content:custom,className:'period-custom'}
+ ].map(item=>({...item,tabAttrs:{'data-period-tab':item.value},panelAttrs:{'data-period-panel':item.value}}))});
+ const popup=uiPopup({id:'eleven-period-menu',className:'period-menu',title:label('Timeframe','Tijdvak'),label:label('Choose a period','Kies een periode'),closeLabel:label('Close','Sluiten'),closeAttrs:{'data-period':'close'},content:`<div class="period-current-range">${periodEscape(range)}${zoomed?`<span class="zoom-status">${label('Zoomed in','Ingezoomd')}</span>`:''}</div><div class="period-default" role="menu" aria-label="${label('Default','Standaard')}">${choice(['configured',standard])}</div>${contents}`});
+ const trigger=uiButton({className:'period-trigger',content:`<span>${periodEscape(compactName)}</span>${cardHeaderIcon('down')}`,attrs:{'data-period':'menu','aria-haspopup':'dialog','aria-controls':'eleven-period-menu','aria-expanded':host._periodMenuOpen===true,title:range,'aria-label':label('Timeframe','Tijdvak')+': '+compactName,'aria-description':range+(zoomed?'. '+label('Zoomed in','Ingezoomd'):'')}});
+ const navigation=[['previous',label('Previous period','Vorige periode')],['now',label('Return to the current period','Terug naar de huidige periode')],['next',label('Next period','Volgende periode')]].map(([key,title])=>uiButton({text:key==='now'?label('Now','Nu'):'',content:key==='now'?undefined:cardHeaderIcon(key),disabled:key==='next'&&!canGoNext,title,label:title,attrs:{'data-period':key}})).join('');
+ return {picker:`<div class="period-controls">${trigger}${popup}</div>`,navigation};
+
 }
 function restorePeriodFocus(host,items=[]){
  const key=host._periodFocus;if(!key)return;const root=host.shadowRoot;
- const target=key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
+ const target=key.startsWith('tab:')?root.querySelector(host._periodMenuOpen?'[data-period-tab="'+key.slice(4)+'"]':'[data-period="menu"]'):key.startsWith('custom:')&&host._periodMenuOpen?root.querySelector('[data-custom-field="'+key.slice(7)+'"]'):key==='history'?root.querySelector('.history-link'):key.startsWith('zoom:')?root.querySelector('[data-zoom="'+key.slice(5)+'"]'):key.startsWith('option:')&&host._periodMenuOpen?items.find(item=>item.dataset.periodOption===key.slice(7)):root.querySelector('[data-period="'+(key.startsWith('option:')?'menu':key)+'"]');
  (target?.disabled?root.querySelector('[data-period="now"], [data-zoom="in"]:not(:disabled), .history-link'):target)?.focus?.({preventScroll:true});host._periodFocus=null;
 }
 function disconnectPeriodControls(host,preserveState=false){host._periodMenuCleanup?.();host._periodMenuCleanup=null;if(!preserveState)host._periodMenuPending=false;}
 function bindPeriodControls(host){
  disconnectPeriodControls(host,true);
  const root=host.shadowRoot,nav=root.querySelector('.period-controls');if(!nav){restorePeriodFocus(host);return;}
- const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')],native=typeof menu.showPopover==='function';
+ const menu=nav.querySelector('.period-menu'),trigger=nav.querySelector('[data-period="menu"]'),items=[...menu.querySelectorAll('[data-period-option]')];
+ const nl=(host._hass?.language??'en').startsWith('nl'),label=(en,nlText)=>nl?nlText:en;
+ const form=menu.querySelector('form[data-custom-range]'),tabs=[...menu.querySelectorAll('[data-period-tab]')],panels=[...menu.querySelectorAll('[data-period-panel]')];
+ const visibleItems=()=>items.filter(item=>!item.closest?.('[data-period-panel]')?.hidden);
+ const updateOptionFocus=()=>{
+  const visible=visibleItems();for(const item of items)item.tabIndex=-1;
+  const standard=visible.find(item=>item.dataset.periodOption==='configured');if(standard)standard.tabIndex=0;
+  const options=visible.filter(item=>item!==standard),selected=options.find(item=>item.getAttribute('aria-checked')==='true')??options[0];if(selected)selected.tabIndex=0;
+ };
+ updateOptionFocus();
  const cleanups=[];
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  host._periodMenuCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
- const isOpen=()=>native?menu.matches(':popover-open'):menu.hasAttribute('data-fallback-open');
- let focusPending=false,scrollPending=false;
- const placement=bindCardPopupPosition(host,trigger,menu,()=>host._periodMenuOpen,()=>{
-  host._periodMenuPending=false;
-  if(native){if(!isOpen())menu.showPopover();}else menu.setAttribute('data-fallback-open','');
-  if(focusPending){(items.find(item=>item.getAttribute('aria-checked')==='true')??items[0]).focus({preventScroll:true});focusPending=false;}
-  restorePeriodFocus(host,items);
-  // Hidden replacement menus have no scrolling box. Restore only once, after
-  // opening at the constrained height, without undoing subsequent user scroll.
-  if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}
- }),position=placement.position;
- cleanups.push(()=>placement.disconnect());
- const close=(restore=false)=>{
-  host._periodMenuOpen=false;host._periodMenuPending=false;trigger.setAttribute('aria-expanded','false');
-  if(native){if(menu.matches(':popover-open'))menu.hidePopover();}else menu.removeAttribute('data-fallback-open');
-  if(restore)trigger.focus({preventScroll:true});
- };
- const open=(focus=true)=>{
-  closeOtherCardPopups(host,'period');
-  host._periodMenuOpen=true;host._periodMenuPending=true;focusPending=focus;scrollPending=!focus;trigger.setAttribute('aria-expanded','true');
-  position();
- };
- // Remember the pointer state before native light dismissal runs on pointerup.
- let pointerWasOpen;
- trigger.onpointerdown=()=>{pointerWasOpen=host._periodMenuOpen;};
- trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
- trigger.onclick=()=>{const wasOpen=pointerWasOpen??host._periodMenuOpen;pointerWasOpen=undefined;wasOpen?close(true):open();};
- menu.querySelector('[data-period="close"]').onclick=()=>close(true);
- trigger.onkeydown=e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();open();if(e.key==='ArrowUp')items.at(-1).focus({preventScroll:true});}};
- menu.addEventListener('toggle',e=>{if(host.shadowRoot.querySelector('.period-menu')!==menu)return;host._periodMenuOpen=e.newState==='open';trigger.setAttribute('aria-expanded',String(host._periodMenuOpen));});
+ let scrollPending=false;
+ const controller=bindUIPopup({trigger,popup:menu,container:nav,ready:root.querySelector('ha-card')?.updateComplete,
+  isRequested:()=>host._periodMenuOpen,isCurrent:()=>root.querySelector('.period-menu')===menu,
+  beforeOpen:()=>closeOtherCardPopups(host,'period'),
+  onOpen:focus=>{host._periodMenuOpen=true;host._periodMenuPending=true;scrollPending=!focus;},
+  onClose:()=>{host._periodMenuOpen=false;host._periodMenuPending=false;},
+  onToggle:open=>{host._periodMenuOpen=open;},
+  focusTarget:()=>visibleItems().find(item=>item.getAttribute('aria-checked')==='true')??tabs.find(tab=>tab.getAttribute('aria-selected')==='true')??items[0],
+  onShown:()=>{host._periodMenuPending=false;restorePeriodFocus(host,items);if(scrollPending){menu.scrollTop=host._periodMenuScroll??0;scrollPending=false;}}
+ });
+ const {open,close,position}=controller;cleanups.push(()=>controller.disconnect());
+ trigger.onkeydown=e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();open();if(e.key==='ArrowUp')visibleItems().at(-1)?.focus({preventScroll:true});}};
  for(const item of items)item.onclick=()=>{close(true);chooseGraphPeriod(host,item.dataset.periodOption);};
+ const tabController=bindUITabs({tabs,panels,onSelect:value=>{
+  host._periodTab=value;updateOptionFocus();host._periodMenuScroll=0;menu.scrollTop=0;position();
+ }});cleanups.push(()=>tabController.disconnect());
+ if(form?.tagName==='FORM'){
+  const fields=Object.fromEntries(['start','end'].map(key=>[key,form.elements.namedItem(key)]));
+  const readDraft=()=>host._periodCustomDraft={start:fields.start.value,end:fields.end.value};
+  listen(form,'input',()=>{readDraft();const error=form.querySelector('.period-custom-error');error.hidden=true;error.textContent='';});
+  listen(form,'submit',e=>{
+   e.preventDefault();const draft=readDraft(),zone=host._hass?.config?.time_zone||'UTC',previous=graphPeriodRange(host);
+   const start=parsePeriodDateTime(draft.start,zone,'start',previous.start),end=parsePeriodDateTime(draft.end,zone,'end',previous.end);
+   let message;
+   if(!Number.isFinite(start)||!Number.isFinite(end))message=label('Choose valid dates and times in the displayed timezone.','Kies geldige datums en tijden in de getoonde tijdzone.');
+   else if(end<=start)message=label('End must be after start.','Einde moet na begin liggen.');
+   else if(end-start>366*86400000)message=label('Choose a range of at most 366 days.','Kies een bereik van maximaal 366 dagen.');
+   if(message){draft.error=message;const error=form.querySelector('.period-custom-error');error.textContent=message;error.hidden=false;position();return;}
+   close(true);chooseCustomGraphPeriod(host,start,end);
+  });
+ }
  menu.onkeydown=e=>{
-  if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);return;}
-  if(e.key==='Tab'){e.preventDefault();close(true);if(!e.shiftKey)root.querySelector('.chart-controls button:not(:disabled)')?.focus();return;}
-  if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();const index=items.indexOf(host.shadowRoot.activeElement),next=e.key==='Home'?0:e.key==='End'?items.length-1:index<0?(e.key==='ArrowUp'?items.length-1:0):(index+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;items[next].focus();}
+  if(e.target?.closest?.('.period-custom, .period-tabs'))return;
+  if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){
+   const visible=visibleItems();if(!visible.length)return;e.preventDefault();const index=visible.indexOf(host.shadowRoot.activeElement),next=e.key==='Home'?0:e.key==='End'?visible.length-1:index<0?(e.key==='ArrowUp'?visible.length-1:0):(index+(e.key==='ArrowDown'?1:-1)+visible.length)%visible.length;
+   visible[next].focus();
+  }
  };
  for(const [key,direction]of [['previous',-1],['next',1],['now',0]])root.querySelector(`[data-period="${key}"]`).onclick=()=>{close();moveGraphPeriod(host,direction);};
- listen(window,'resize',()=>{if(host._periodMenuOpen)position();});
- listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(menu))close();},true);
- listen(document,'pointerdown',e=>{if((!native||host._periodMenuPending)&&host._periodMenuOpen&&!e.composedPath().includes(nav))close();});
  if(host._periodMenuOpen)open(false);
  if(!host._periodMenuPending)restorePeriodFocus(host,items);
 }
-function periodControlsStyles(){return `
-.period-controls{display:flex;min-width:0;max-width:100%}
-.header-actions .period-trigger{width:auto;max-width:100%;gap:6px;padding:4px 10px;border:0;border-radius:5px;background:var(--secondary-background-color,#eee);font-weight:400}
+function periodControlsStyles(){return uiTabsStyles()+`
+.period-controls{display:flex;min-width:0;max-width:100%;flex:0 1 auto}
+.header-actions .period-trigger{width:auto;min-width:0;max-width:100%;flex:0 1 auto;gap:6px;padding:4px 10px;border:0;border-radius:4px;background:transparent;font-weight:400}
 .header-actions .period-trigger:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
-.period-trigger span{min-width:0;overflow-wrap:anywhere}
+.period-trigger span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .period-current-range{font-size:11px;line-height:1.5;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;margin:2px 0 10px}
 .period-current-range .zoom-status{display:table;margin-top:4px}
-.period-menu:popover-open{display:block}
-.period-menu[data-fallback-open]{display:block}
-.period-menu-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-.period-menu h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--secondary-text-color,#666);margin:8px}
-.period-menu button{font:inherit;font-size:12px;color:var(--primary-text-color,#20252b);background:transparent;box-sizing:border-box;display:flex;border:1px solid transparent;border-radius:5px;cursor:pointer;height:auto;width:100%;justify-content:space-between;gap:8px;min-height:34px;border-color:transparent;text-align:start;padding:6px 8px;font-weight:400}
-.period-menu button:hover{background:var(--secondary-background-color,#eee)}
-.period-menu button:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
-.period-menu button[aria-checked="true"]{color:var(--primary-color,#2196f3);background:color-mix(in srgb,var(--primary-color,#2196f3) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
-.period-menu p{font-size:11px;line-height:1.5;color:var(--secondary-text-color,#666);margin:10px 8px 2px;overflow-wrap:anywhere}
-.period-default{border-bottom:1px solid var(--divider-color,#ddd);padding-bottom:8px;margin-bottom:8px}
+.period-tabs{margin:10px 0 0}
+.period-panel{padding-top:12px}
+.period-options{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-bottom:4px}
+.period-options button{position:relative;justify-content:center;padding:7px 3px;gap:0;min-width:0;white-space:nowrap}
+.period-options button>span:last-child{position:absolute;inset-inline-end:2px;top:1px;font-size:9px;line-height:1}
+.period-calendar{grid-template-columns:repeat(3,minmax(0,1fr))}
+.period-custom-fields{display:grid;gap:10px}
+.period-custom-fields label{display:grid;gap:4px;font-size:12px}
+.period-custom input{box-sizing:border-box;width:100%;min-width:0;padding:8px;border:1px solid var(--divider-color,#ddd);border-radius:5px;font:inherit;color:var(--primary-text-color,#20252b);background:var(--ha-card-background,var(--card-background-color,#fff));color-scheme:inherit}
+.period-custom input:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-1px}
+.period-custom p{font-size:11px;line-height:1.5;color:var(--secondary-text-color,#666);margin:8px 0;overflow-wrap:anywhere}
+.period-custom .period-custom-error{color:var(--error-color,#db4437)}
+.period-custom button[type="submit"]{justify-content:center;margin-top:10px}
 `;}
 
 // ../../shared/chart-insights.js
@@ -437,33 +697,20 @@ function isolateChartSeries(host,id){
  host._visibility=new Map(host._config.entities.map(entity=>[entity,entity===id]));host._hideTooltip?.();host._render();
 }
 function showAllChartSeries(host){host._visibility=new Map(host._config.entities.map(id=>[id,true]));host._hideTooltip?.();host._render();}
-function cancelChartLegendClicks(host){for(const timer of host._legendClickTimers?.values()??[])clearTimeout(timer);host._legendClickTimers?.clear();}
 function toggleChartIsolation(host,id){
  if(!host._config.entities.includes(id))return;
- cancelChartLegendClicks(host);
+ cancelUILegendClicks(host);
  const only=host._config.entities.every((entity,i)=>host._isSeriesVisible(i)===(entity===id));
  only?showAllChartSeries(host):isolateChartSeries(host,id);
- queueMicrotask(()=>host.shadowRoot.querySelector(`[data-series="${id}"]`)?.focus({preventScroll:true}));
+ focusUILegend(host,id,'[data-series]',button=>button.dataset.series);
 }
 function bindChartLegend(host){
  const nl=host._insightLanguage==='nl',hint=nl?'Dubbelklik of Shift+Enter: alleen deze sensor. Herhaal om alles te tonen.':'Double-click or Shift+Enter: show only this sensor. Repeat to show all.';
- for(const button of host.shadowRoot.querySelectorAll?.('[data-series]')??[]){
-  const id=button.dataset.series;
-  if(!button.title?.includes(hint))button.title=[button.title,hint].filter(Boolean).join(' ');button.setAttribute('aria-description',hint);button.setAttribute('aria-keyshortcuts','Shift+Enter Shift+Space');
-  button.onclick=e=>{
-   clearTimeout(host._legendClickTimers?.get(id));host._legendClickTimers?.delete(id);
-   if(e.shiftKey||e.detail>1){e.preventDefault();toggleChartIsolation(host,id);return;}
-   if(!e.detail){host._toggleSeries?host._toggleSeries(id):toggleChartIsolation(host,id);return;}
-   // Keep the target alive until a second click can arrive: rendering after
-   // the first click would replace it and break native double-click detection.
-   if(host._toggleSeries){const config=host._config;host._legendClickTimers??=new Map();host._legendClickTimers.set(id,setTimeout(()=>{host._legendClickTimers.delete(id);if(host._config===config)host._toggleSeries(id);},300));}
-  };
-  button.ondblclick=e=>e.preventDefault();
-  button.onkeydown=e=>{if(e.shiftKey&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopPropagation();toggleChartIsolation(host,id);}};
- }
+ bindUILegend(host,{selector:'[data-series]',getId:button=>button.dataset.series,hint,toggle:host._toggleSeries?id=>host._toggleSeries(id):null,isolate:id=>toggleChartIsolation(host,id)});
 }
 function insightControl(host,key,label,body,icon=''){
- return `<div class="insight-control"><button type="button" class="insight-trigger" data-insight="${key}" title="${insightEscape(label)}" aria-label="${insightEscape(label)}" aria-haspopup="dialog" aria-expanded="${host._insightOpen===key}" aria-controls="insight-${key}">${icon}${key==='data'?'':`<span>${insightEscape(label)}</span>`}</button><div id="insight-${key}" class="insight-popup" data-insight-panel="${key}" popover="auto" role="dialog" aria-label="${insightEscape(label)}"><div class="chart-popup-heading"><strong>${insightEscape(label)}</strong><button type="button" data-insight-close aria-label="${host._insightLanguage==='nl'?'Sluiten':'Close'}">×</button></div>${body}</div></div>`;
+ const trigger=uiButton({className:'insight-trigger',content:icon+(key==='data'?'':`<span>${insightEscape(label)}</span>`),attrs:{'data-insight':key,title:label,'aria-label':label,'aria-haspopup':'dialog','aria-expanded':host._insightOpen===key,'aria-controls':'insight-'+key}});
+ return `<div class="insight-control">${trigger}${uiPopup({id:'insight-'+key,className:'insight-popup',attrs:{'data-insight-panel':key},title:label,closeLabel:host._insightLanguage==='nl'?'Sluiten':'Close',closeAttrs:{'data-insight-close':''},content:body})}</div>`;
 }
 // Work on unstacked, undecimated values. A history value holds until the next
 // point (null breaks coverage); bars have equal weight, regardless of bin length.
@@ -499,7 +746,8 @@ function chartDataInformation(host,language='en'){
    const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
    const metrics=row?.durations?`<dl class="insight-durations">${row.durations.map(s=>`<div><dt title="${insightEscape(s.missing?(nl?'Geen geschiedenis':'No history'):s.state)}">${insightEscape(s.label)}</dt><dd>${insightEscape(host._duration(s.duration))}</dd></div>`).join('')}</dl>`:row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
    const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.limited?(nl?'Meer dan 20 statussen':'More than 20 states'):row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
-   return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
+   const color=host._insightColor?.(i,row)??'var(--primary-color,#2196f3)';
+   return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><i class="insight-color" style="--insight-color:${insightEscape(color)}" aria-hidden="true"></i><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
   }).join('')}</div>`;
  }
  return insightControl(host,'data',nl?'Gegevens':'Data information',body,cardHeaderIcon('info'));
@@ -511,7 +759,7 @@ function captureChartInsights(host){
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
  host._insightOpen=popup?.dataset.insightPanel??host._insightPending??null;
 }
-function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelChartLegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
+function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelUILegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
 function restoreChartInsightFocus(host){
  if(!host._insightFocus||host._insightPending)return;
  const root=host.shadowRoot,{key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
@@ -522,30 +770,18 @@ function bindChartInsights(host){
  const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  for(const control of root.querySelectorAll?.('.insight-control')??[]){
-  const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
-  const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
-  let focusPending=false;
-  const placement=bindCardPopupPosition(host,trigger,popup,()=>host._insightOpen===key,()=>{
-   host._insightPending=null;
-   if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
-   if(focusPending){popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});focusPending=false;}
-   restoreChartInsightFocus(host);
-  }),position=placement.position;
-  cleanups.push(()=>placement.disconnect());
-  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;host._insightPending=key;focusPending=focus;trigger.setAttribute('aria-expanded','true');position();};
-  let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
-  trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
-  popup.querySelector('[data-insight-close]').onclick=()=>close(true);
-  popup.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);}};
-  popup.addEventListener('toggle',e=>{if(root.querySelector(`[data-insight-panel="${key}"]`)!==popup)return;trigger.setAttribute('aria-expanded',String(e.newState==='open'));if(e.newState==='closed'&&host._insightOpen===key)host._insightOpen=null;});
+  const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight;
+  const controller=bindUIPopup({trigger,popup,container:control,ready:root.querySelector('ha-card')?.updateComplete,
+   isRequested:()=>host._insightOpen===key,isCurrent:()=>root.querySelector(`[data-insight-panel="${key}"]`)===popup,
+   beforeOpen:()=>closeOtherCardPopups(host,'insight'),
+   onOpen:()=>{host._insightOpen=key;host._insightPending=key;},
+   onClose:()=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;},
+   onToggle:open=>{if(!open&&host._insightOpen===key)host._insightOpen=null;},
+   onShown:()=>{host._insightPending=null;restoreChartInsightFocus(host);},closeWhenAnchorHidden:true
+  });
+  const {open,close}=controller;cleanups.push(()=>controller.disconnect());
   for(const button of popup.querySelectorAll('[data-isolate]'))button.onclick=()=>{close(true);isolateChartSeries(host,button.dataset.isolate);};
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
-  listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
-  listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  // Restored focus has a capture listener that may already clear restore state.
-  // A fallback popup still needs dismissal based on its actual visible state.
-  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
  restoreChartInsightFocus(host);
@@ -558,19 +794,11 @@ function chartInsightStyles(){return `
 .chart-range .period-panel{margin:0}
 .zoom-status{font-size:11px;color:var(--primary-text-color,#20252b);background:var(--secondary-background-color,#eee);border-radius:4px;padding:2px 6px;white-space:nowrap}
 .insight-control{display:inline-flex;flex:none}
-.insight-trigger{font:inherit;font-size:11px;min-height:28px;padding:3px 7px;display:flex;align-items:center;gap:5px;border:0;border-radius:5px;background:transparent;color:var(--primary-text-color,#20252b);cursor:pointer}
 .insight-trigger svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.insight-trigger:hover{background:var(--secondary-background-color,#eee)}
-.header-actions .insight-trigger{width:32px;height:32px;padding:0;background:var(--secondary-background-color,#eee);border-radius:5px}
+.header-actions .insight-trigger{width:32px;height:32px;padding:0;background:transparent;border-radius:4px}
 .header-actions .insight-trigger:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
 .header-actions .insight-trigger svg{width:18px;height:18px;stroke-width:2}
-.insight-trigger:focus-visible,.insight-popup button:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
 .insight-popup{z-index:21}
-.insight-popup:popover-open{display:block}
-.insight-popup[data-fallback-open]{display:block}
-.insight-popup button{display:block;box-sizing:border-box;width:auto;height:auto;padding:0;font:inherit;cursor:pointer;color:inherit;background:transparent;border:0;border-radius:5px;min-height:30px}
-.insight-popup button:disabled{opacity:.4;cursor:default}
-.insight-popup button:hover{background:var(--secondary-background-color,#eee)}
 .insight-popup p{margin:8px 0 12px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
 .insight-popup p strong{color:var(--primary-text-color,#20252b);font-weight:500}
 .insight-popup .insight-choice{display:block;width:100%;padding:6px 8px;text-align:start;overflow-wrap:anywhere}
@@ -578,7 +806,8 @@ function chartInsightStyles(){return `
 .insight-sensors{display:grid}
 .insight-sensor{min-width:0;padding:8px 0}
 .insight-sensor+.insight-sensor{border-top:1px solid var(--divider-color,#ddd)}
-.insight-sensor-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px}
+.insight-sensor-heading{display:flex;align-items:center;flex-wrap:wrap;gap:2px 8px}
+.insight-color{display:block;width:7px;height:7px;flex:none;border-radius:2px;background:var(--insight-color,var(--primary-color,#2196f3))}
 .insight-sensor-heading>strong{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
 .insight-source{font-size:10px;font-weight:400;color:var(--secondary-text-color,#666);color:color-mix(in srgb,var(--secondary-text-color,#666) 90%,var(--ha-card-background,var(--card-background-color,#fff)));flex:none}
 .insight-unit{white-space:nowrap}
@@ -626,7 +855,7 @@ function seriesAppearance(config,index,seen=new Set()) {
  return structuredClone(row);
 }
 function editorConfig(config) {
- const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:(config.entities??[]).map((entity,index)=>{
+ const data={hours_to_show:24,data_source:'auto',graph_mode:'lines',aggregation_period:'none',aggregation_method:'avg',show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',sync_timeframe:false,...config,...timeframeSyncConfig(config,{draft:true}),entities:(config.entities??[]).map((entity,index)=>{
   const row=seriesAppearance(config,index);
   for(const key of ['color','fill_color'])if(validColor(row[key]))row[key]=[...rgb(row[key])];
   row.gradient_stops=row.gradient_stops.map(s=>({...s,color:validColor(s.color)?[...rgb(s.color)]:s.color}));
@@ -693,6 +922,7 @@ function validateConfig(config) {
  if(typeof hours!=='number'||!Number.isFinite(hours)||hours<1||hours>8760) throw new Error('hours');
  if(config.title!==undefined&&typeof config.title!=='string') throw new Error('title');
  const result={line_interpolation:'step',line_width:3.5,show_fill:false,fill_fade:true,fill_opacity:0.18,show_hover_line:true,show_legend:true,show_title:true,show_navigation:true,show_grid:true,align_zero:true,sync_hover:true,hover_sync_group:'',...config,entities:[...entities],hours_to_show:hours};
+ Object.assign(result,timeframeSyncConfig(config));
  if(typeof result.sync_hover!=='boolean')throw new Error('sync_hover');
  if(result.hover_sync_group==null)result.hover_sync_group='';
  if(typeof result.hover_sync_group!=='string')throw new Error('hover_sync_group');
@@ -786,7 +1016,7 @@ async function loadHistorySeries(hass,config,start,end){
      if(points.some(p=>p.v!==null)||strict)selected.set(id,{id,source:'statistics',points:[...new Map(points.map(p=>[p.t,p])).values()].sort((a,b)=>a.t-b.t)});
     }
    }
-  }catch(error){if(strict)throw error;selected.clear();}
+  }catch(error){if(strict)throw error;}
  }
  const missing=config.entities.filter(id=>!selected.has(id));
  if(missing.length){
@@ -1016,6 +1246,8 @@ function historyUrl(config,end) {
 const translations={
  title:['History','Historie'],loading:['Loading history…','Historie laden…'],empty:['No numeric history in this range.','Geen numerieke historie in deze periode.'],error:['History unavailable. Check recorder and connection.','Historie niet beschikbaar. Controleer recorder en verbinding.'],unit:['All sensors must have the same unit.','Alle sensoren moeten dezelfde eenheid hebben.'],missing:['Configured sensor not found.','Ingestelde sensor niet gevonden.'],unavailable:['Unavailable','Niet beschikbaar'],retry:['Retry','Opnieuw proberen'],chart:['History graph. Arrow keys, Home and End select a time; Escape closes details.','Historiegrafiek. Pijltjes, Home en End selecteren een tijd; Escape sluit details.'],entities:['Sensors','Sensoren'],hours_to_show:['Hours to show','Aantal uren'],hoursHelper:['Historical range: 1–8760 hours. Each different unit gets its own Y-axis.','Historische periode: 1–8760 uur. Iedere verschillende eenheid krijgt een eigen Y-as.'],titleField:['Title','Titel'],partial:['Some sensors have no numeric history:','Sommige sensoren hebben geen numerieke historie:'],config:['Invalid configuration: use 1–8 distinct sensors and 1–8760 hours.','Ongeldige configuratie: gebruik 1–8 unieke sensoren en 1–8760 uur.']};
 Object.assign(translations,{
+ sync_timeframe:['Synchronize timeframe','Tijdvak synchroniseren'],
+ sync_timeframeHelper:['Shares timeframe selection and previous/next/Now with enabled cards in the same group.','Deelt tijdvakkeuze en vorige/volgende/Nu met ingeschakelde kaarten in dezelfde groep.'],
  show_title:['Show title','Titel tonen'],
  show_navigation:['Show timeframe selection','Tijdvakselectie tonen'],
  show_grid:['Show grid','Grid tonen'],
@@ -1032,9 +1264,9 @@ Object.assign(translations,{
  graph_mode:['Graph mode','Grafiekmodus'],lines:['Separate lines','Losse lijnen'],stacked:['Stacked sums','Gestapelde sommen'],
  series_options:['Sensor names and colors','Sensornamen en kleuren'],entity:['Sensor','Sensor'],name:['Custom name','Eigen naam'],
  entitiesHelper:['Set name, fixed color or 2–32 color stops in each sensor entry. Sensor settings override shared colors; its own gradient overrides its fixed color.','Stel naam, vaste kleur of 2–32 kleurovergangen in per sensorregel. Sensorinstellingen gaan voor algemene kleuren; een eigen gradiënt gaat voor de eigen vaste kleur.'],
- sync_hover:['Synchronize hover','Hover synchroniseren'],hover_sync_group:['Hover synchronization group','Hover-synchronisatiegroep'],
+ sync_hover:['Synchronize hover','Hover synchroniseren'],hover_sync_group:['Synchronization group','Synchronisatiegroep'],
  sync_hoverHelper:['Shares the selected time with other Eleven graphs on this page.','Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.'],
- hover_sync_groupHelper:['Cards with the same group follow each other. Empty uses the default group.','Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.'],
+ hover_sync_groupHelper:['Cards with the same group share hover and timeframe when the corresponding synchronization is enabled. Empty uses the default group.','Kaarten met dezelfde groep delen hover en tijdvak als de bijbehorende synchronisatie aanstaat. Leeg gebruikt de standaardgroep.'],
  line_interpolation:['Line interpolation','Lijnverloop'],interpolation_smooth:['Smooth','Vloeiend'],interpolation_linear:['Linear','Recht'],interpolation_step:['Stepped','Trapvormig'],
  line_interpolationHelper:['Display only: chooses how recorded points are connected.','Alleen weergave: bepaalt hoe geregistreerde punten worden verbonden.'],
  connect_gaps:['Bridge missing data','Ontbrekende data overbruggen'],
@@ -1209,7 +1441,7 @@ class HistoryGraphCard extends HTMLElement {
     {name:'show_grid',default:true,selector:{boolean:{}}},
     {name:'show_hover_line',default:true,selector:{boolean:{}}},
     {name:'sync_hover',default:true,selector:{boolean:{}}},
-    {name:'hover_sync_group',selector:{text:{}}}
+    {name:'hover_sync_group',selector:{text:{}}},{name:'sync_timeframe',default:false,selector:{boolean:{}}}
    ]},
    {type:'expandable',name:'y_axis',get title(){return label('y_axis');},flatten:true,schema:[
     {name:'y_min',selector:{number:{step:'any',mode:'box'}}},
@@ -1269,6 +1501,11 @@ class HistoryGraphCard extends HTMLElement {
   const color=gradientColor(stops,value,mode)??fixed??COLORS[index];
   return {color:color||COLORS[index],stroke:stops.length?`url(#history-colors-${index})`:fixed||COLORS[index],...graphLineStyle(style,width)};
  }
+ _insightColor(index){
+  const points=this._series[index]?.points??[];
+  let last=null;for(let i=points.length-1;i>=0;i--)if(Number.isFinite(points[i].v)){last=points[i].v;break;}
+  return this._appearance(index,last).color;
+ }
  _gradient(min,max,y){
   const c=this._config;
   const gradients=c.entities.map((_,index)=>{
@@ -1308,7 +1545,7 @@ class HistoryGraphCard extends HTMLElement {
  setConfig(config){let validated;try{validated=validateConfig(config);}catch(error){throw new Error(text(error.message==='y_step'?'y_step_error':error.message==='y_step_count'?'y_step_count':error.message?.startsWith('line_style_source')?'line_style_source_error':'config',language(this._hass??frontendHass())));}
   const previous=this._config,visibility=this._visibility;
   this._visibility=new Map(validated.entities.map(id=>{const initial=validated.series_options.find(s=>s.entity===id)?.visible??true,old=previous?.series_options.find(s=>s.entity===id)?.visible??true;return [id,initial===old&&visibility?.has(id)?visibility.get(id):initial];}));
-  SharedGraph.clearHover(this);this._config=validated;this._lastLoad=null;this._loadFailed=false;this._insightOpen=null;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;resetGraphPeriod(this);this._status='loading';clearTimeout(this._timer);this._timer=null;this._render();if(this._connected&&this._hass)this._refresh();}
+  SharedGraph.clearHover(this);this._config={...validated,...timeframeSyncConfig(validated)};this._lastLoad=null;this._loadFailed=false;this._insightOpen=null;this._generation++;this._inFlight=false;this._series=[];this._rawSeries=null;this._viewport=null;resetGraphPeriod(this);this._status='loading';this._refreshFailures=0;clearTimeout(this._timer);this._timer=null;connectTimeframeSync(this);this._render();if(this._connected&&this._hass)this._refresh();}
  set hass(hass){this._hass=hass;if(!this._config)return;let signature;try{const meta=seriesMetadata(hass,this._config.entities);signature=JSON.stringify([meta,language(hass),hass.config?.time_zone]);}catch(e){signature=e.message;}
   if(signature!==this._signature){this._signature=signature;this._render();}
   this._updateGraphTheme();
@@ -1325,8 +1562,8 @@ class HistoryGraphCard extends HTMLElement {
   if(parent){const elf=parent.querySelector('.eleven-elf');const visible=now<(this._elfPreviewUntil??0);if(visible&&!elf)parent.insertAdjacentHTML('beforeend',elevenMarkup(Math.max(0,now-(this._elfPreviewUntil-ELF_FLIGHT_MS))));else if(!visible&&elf)elf.remove();}
   if(this._connected){this._elfTimer=setTimeout(()=>this._syncElf(),Math.min(60000-now%60000,this._elfPreviewUntil>now?this._elfPreviewUntil-now:60000));this._elfTimer.unref?.();}
  }
- connectedCallback(){this._connected=true;SharedGraph.connectHover(this,t=>this._receiveHover(t));this._elfPreview??=()=>{this._elfPreviewUntil=Date.now()+ELF_FLIGHT_MS;this.shadowRoot.querySelector('.eleven-elf')?.remove();this._syncElf();};registerElfPreview(this._elfPreview);document.addEventListener('pointerdown',this._outside);this._syncElf();if(this._config&&this._hass)this._refresh();}
- disconnectedCallback(){disconnectChartInsights(this);disconnectPeriodControls(this);SharedGraph.disconnectHover(this);this._connected=false;unregisterElfPreview(this._elfPreview);this._elfPreviewUntil=0;this._generation++;this._inFlight=false;this._started=false;clearTimeout(this._timer);this._timer=null;clearTimeout(this._elfTimer);this._elfTimer=null;document.removeEventListener('pointerdown',this._outside);}
+ connectedCallback(){this._connected=true;connectTimeframeSync(this);SharedGraph.connectHover(this,t=>this._receiveHover(t));this._elfPreview??=()=>{this._elfPreviewUntil=Date.now()+ELF_FLIGHT_MS;this.shadowRoot.querySelector('.eleven-elf')?.remove();this._syncElf();};registerElfPreview(this._elfPreview);document.addEventListener('pointerdown',this._outside);this._syncElf();if(this._config&&this._hass)this._refresh();}
+ disconnectedCallback(){disconnectTimeframeSync(this);disconnectChartInsights(this);disconnectPeriodControls(this);SharedGraph.disconnectHover(this);this._connected=false;unregisterElfPreview(this._elfPreview);this._elfPreviewUntil=0;this._generation++;this._inFlight=false;this._started=false;clearTimeout(this._timer);this._timer=null;clearTimeout(this._elfTimer);this._elfTimer=null;document.removeEventListener('pointerdown',this._outside);}
  async _refresh(){
   if(!this._connected||!this._config||!this._hass||this._inFlight)return;
   clearTimeout(this._timer);this._timer=null;const generation=++this._generation;this._inFlight=true;this._started=true;
@@ -1339,9 +1576,9 @@ class HistoryGraphCard extends HTMLElement {
    seriesMetadata(this._hass,config.entities);
    this._series=response;this._rawSeries=this._series;this._start=start;this._end=end;
    this._loadFailed=false;this._lastLoad={at:Date.now(),start,end,sources:response.map(s=>({id:s.id,source:s.source??'history',empty:!s.points.some(p=>p.v!==null)}))};
-   this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';
-  }catch(e){if(generation!==this._generation||!this._connected)return;this._loadFailed=true;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
-  finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),REFRESH_MS);this._timer.unref?.();}}
+   this._status=this._series.some(s=>s.points.some(p=>p.v!==null))?'ready':'empty';this._refreshFailures=0;
+  }catch(e){if(generation!==this._generation||!this._connected)return;this._refreshFailures=(this._refreshFailures??0)+1;this._loadFailed=true;this._status=['missing','unit','statistics_config','statistics_unavailable'].includes(e.message)?e.message:'error';this._series=[];}
+  finally{clearTimeout(timeout);if(generation===this._generation&&this._connected){this._inFlight=false;this._render();this._timer=setTimeout(()=>this._refresh(),retryDelay(this._refreshFailures??0,REFRESH_MS));this._timer.unref?.();}}
  }
  _getGraphAxes(series,meta,visible){return graphAxes(series,meta,this._config,this._start,this._end,visible);}
  _aggregateSeries(){return aggregateSeries(this._rawSeries,this._start,this._end,this._config.aggregation_period,this._config.aggregation_method,this._zone);}
@@ -1374,7 +1611,7 @@ class HistoryGraphCard extends HTMLElement {
     const unit=mixed?`<span class="axis-unit" style="${position}">${escapeHtml(axis.unit||'—')}</span>`:'';
     return unit+[...axis.ticks].reverse().map(value=>{const ratio=(axis.max-value)/(axis.max-axis.min);return `<span class="axis-y" style="top:calc(${ratio*100}% + ${22-ratio*52}px);${position}">${escapeHtml(number(value,lang,true))}</span>`;}).join('');
    }).join('');
-   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._viewStart+(this._viewEnd-this._viewStart)*i/3,lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
+   const times=Array.from({length:4},(_,i)=>`<span class="axis-x" data-tick="${i}" style="left:calc(${i/3*100}% + ${44-i/3*56}px - ${i/3} * var(--axes-right,0px))">${escapeHtml(time(this._timeAtPlotPosition(i/3),lang,this._zone,(this._viewEnd-this._viewStart)>86400000))}</span>`).join('');
 
    const display=this._plotSeries.map((s,i)=>({...s,points:this._displayPoints(s.points,i)}));
    const seriesY=i=>{const a=this._axes[this._seriesAxes[i]];return v=>(a.max-v)/(a.max-a.min)*300;};
@@ -1387,9 +1624,9 @@ class HistoryGraphCard extends HTMLElement {
    });
    // Statistics bins end exclusively; sample inside the requested range rather
    // than its closing null sentinel. A real gap before the end remains null.
-   const legend=meta.items.map((item,i)=>{const s=this._series[i],value=valueAt(s.points,this._end-(s.source==='statistics'?1:0));const a=this._appearance(i,value);return `<button type="button" class="legend-item" data-series="${item.id}" aria-pressed="${visible[i]}" title="${escapeHtml(text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name)}"><i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong></button>`;}).join('');
+   const legend=uiLegend({items:meta.items.map((item,i)=>{const s=this._series[i],value=valueAt(s.points,this._end-(s.source==='statistics'?1:0));const a=this._appearance(i,value);return {id:item.id,visible:visible[i],title:text(visible[i]?'hide_sensor':'show_sensor',lang)+' '+item.name,attrs:{'data-series':item.id},content:`<i style="--series-color:${a.color};border-top-width:${a.width}px;border-top-style:${a.style}"></i><span>${escapeHtml(item.name)}</span><strong>${value===null?text('unavailable',lang):escapeHtml(number(value,lang))}${mixed&&value!==null&&item.unit?` ${escapeHtml(item.unit)}`:''}</strong>`};}),afterContent:mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`});
    const missing=meta.items.filter((_,i)=>visible[i]&&!this._series[i].points.some(p=>p.v!==null)).map(s=>s.name);
-   content=`${this._config.show_legend?`<div class="legend">${legend}${mixed?'':`<span class="unit">${escapeHtml(meta.unit)}</span>`}</div>`:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
+   content=`${this._config.show_legend?legend:`<div class="data-status">${escapeHtml(mixed?'':meta.unit)}</div>`}${missing.length?`<div class="data-status">${text('partial',lang)} ${escapeHtml(missing.join(', '))}</div>`:''}<div class="chart" style="--axis-column:min(48px, calc((100% - 124px) / ${Math.max(1,extra)}));--axes-right:calc(${extra} * var(--axis-column))" tabindex="0" role="group" aria-label="${text('chart',lang)}">${anyVisible?axes+times:`<div class="empty-visibility" role="status">${escapeHtml(text('no_visible',lang))}</div>`}<div class="plot">${graph}<div class="zoom-selection" hidden></div></div>${this._config.show_hover_line?'<div class="guide" hidden></div>':''}<div class="markers"></div><div class="tooltip" hidden></div><div class="sr-only" aria-live="polite"></div></div>`;
   }
   const controls=cardHeader({title,showTitle:this._config.show_title!==false,ready:this._status==='ready',historyUrl:this._historyUrl(),language:lang,periods:periodControls(this,lang),zoomState:chartZoomState(this),information:chartDataInformation(this,lang)});
   this.shadowRoot.innerHTML=`<style>${this._styles()}</style><ha-card lang="${lang}"><div class="card-content">${controls}${content}</div></ha-card>`;
@@ -1417,7 +1654,7 @@ class HistoryGraphCard extends HTMLElement {
  _historyUrl(){const range=graphPeriodRange(this),ready=this._status==='ready';const end=this._viewport?.[1]??(ready?this._end:range.end)??range.end,start=this._viewport?.[0]??(ready?this._start:range.start)??range.start;return `/history?entity_id=${encodeURIComponent(this._config.entities.join(','))}&start_date=${encodeURIComponent(new Date(start).toISOString())}&end_date=${encodeURIComponent(new Date(end).toISOString())}`;}
  _setPeriod(hours){return chooseGraphPeriod(this,String(hours));}
  _navigate(direction){return moveGraphPeriod(this,direction);}
- _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._render();return this._refresh();}
+ _reloadPeriod(){this._generation++;this._inFlight=false;this._viewport=null;this._hideTooltip();clearTimeout(this._timer);this._status='loading';this._refreshFailures=0;this._render();return this._refresh();}
  _zoom(factor){
   this._hideTooltip();if(!factor)this._viewport=null;
   else{const a=this._viewStart??this._start,b=this._viewEnd??this._end,width=Math.min(this._end-this._start,Math.max(60000,(b-a)*factor)),center=(a+b)/2;
@@ -1426,7 +1663,7 @@ class HistoryGraphCard extends HTMLElement {
  }
  _bindInteractions(){
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
-  const fromPointer=e=>{const box=chart.querySelector('.plot').getBoundingClientRect();return (this._viewStart??this._start)+Math.max(0,Math.min(1,(e.clientX-box.left)/box.width))*((this._viewEnd??this._end)-(this._viewStart??this._start));};
+  const fromPointer=e=>{const box=chart.querySelector('.plot').getBoundingClientRect();return this._timeAtPlotPosition(Math.max(0,Math.min(1,(e.clientX-box.left)/box.width)));};
   let drag=null;const selection=chart.querySelector('.zoom-selection');
   chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){const plot=chart.querySelector('.plot').getBoundingClientRect();if(selection){selection.hidden=false;selection.style.left=`${Math.max(0,Math.min(drag.x,e.clientX)-plot.left)/plot.width*100}%`;selection.style.width=`${Math.min(plot.width,Math.abs(e.clientX-drag.x))/plot.width*100}%`;}}else if(!this._pinned&&!e.target?.closest?.('.tooltip'))this._showTooltip(this._pointerTime(fromPointer(e)));};
   chart.onpointerdown=e=>{if(e.target?.closest?.('.tooltip'))return;this._pinned=true;this._showTooltip(this._pointerTime(fromPointer(e)));if(e.pointerType==='mouse'&&(e.button??0)===0){drag={x:e.clientX,t:fromPointer(e)};chart.setPointerCapture?.(e.pointerId);}};
@@ -1443,6 +1680,7 @@ class HistoryGraphCard extends HTMLElement {
    this._pinned=true;this._showTooltip(timeline[index]);
   };
  }
+ _timeAtPlotPosition(ratio){const start=this._viewStart??this._start;return start+ratio*((this._viewEnd??this._end)-start);}
  _pointerTime(timestamp){return timestamp;}
  _receiveHover(timestamp){if(timestamp===null||timestamp<(this._viewStart??this._start)||timestamp>(this._viewEnd??this._end)){this._hideTooltip(false);return;}this._showTooltip(timestamp,false);}
  _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._cursor=null;this._pinned=false;const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;const tooltip=chart.querySelector('.tooltip');if(tooltip)tooltip.hidden=true;const markers=chart.querySelector('.markers');if(markers)markers.innerHTML='';const guide=chart.querySelector('.guide');if(guide)guide.hidden=true;}
@@ -1471,7 +1709,7 @@ class HistoryGraphCard extends HTMLElement {
  _styles(){return `
  :host{display:block;height:100%;min-width:0;container-type:inline-size;--font-size-meta:11px;--font-size-label:12px;--font-size-title:18px;}
  ha-card{height:100%;display:flex;flex-direction:column;background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,inherit)}
- .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;padding:16px 16px 12px;line-height:1.4}
+ .card-content{position:relative;display:flex;flex-direction:column;box-sizing:border-box;min-height:0;height:100%;overflow:auto;scrollbar-width:thin;padding:16px 16px 12px;line-height:1.4}
  ${cardHeaderStyles()}
  ${periodControlsStyles()}
  ${chartInsightStyles()}
@@ -1607,57 +1845,66 @@ class BarChartCard extends HistoryGraphCard {
   const stacked=plot&&this._config.graph_mode==='stacked';
   const p=points[index],period=this._config.aggregation_period==='none'&&!stacked&&this._series[seriesIndex]?.source==='statistics'?'hour':this._config.aggregation_period;
   const [start,finish]=period==='none'?[p.t,points[index+1]?.t??end]:periodBounds(p.t,period,this._zone);
-  return {start:Math.max(this._start,start),end:Math.min(end,finish),duration:finish-start};
+  return {start:Math.max(this._start,start),end:Math.min(end,finish),duration:finish-start,...(period!=='none'?{center:(start+finish)/2}:{})};
  }
  _barLayout(){
   const source=this._plotSeries??this._series,visible=this._config.entities.map((_,i)=>i).filter(i=>this._isSeriesVisible(i));
   const key=JSON.stringify([this._viewStart,this._viewEnd,this._config.aggregation_period,this._zone,visible]);
   if(this._barLayoutSource===source&&this._barLayoutKey===key)return this._barLayoutCache;
-  const centers=new Set(),intervals=[];let duration=this._viewEnd-this._viewStart;
+  const centers=new Set(),intervals=[];let duration=Infinity;
   for(const index of visible){const points=source[index]?.points??[];
    for(let i=0;i<points.length;i++){
     const interval=this._barInterval(points,i,this._end,index,true),a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
     if(b<=a)continue;
-    duration=Math.min(duration,interval.duration);centers.add((a+b)/2);
+    duration=Math.min(duration,interval.duration);centers.add(interval.center??(a+b)/2);
     if(Number.isFinite(points[i].v))intervals.push({interval,index});
    }
   }
-  const positions=[...centers].sort((a,b)=>a-b);let band=duration;
+  const positions=[...centers].sort((a,b)=>a-b);let band=Number.isFinite(duration)?duration:this._viewEnd-this._viewStart;
   for(let i=1;i<positions.length;i++)band=Math.min(band,positions[i]-positions[i-1]);
-  // Reserve a whole band, including its outer padding, when fitting edge
-  // groups. Fitting only the painted span squeezes the inter-group gap away.
-  if(positions.length>1)band=Math.min(band,(positions[1]-this._viewStart)/1.5,(this._viewEnd-positions.at(-2))/1.5,(this._viewEnd-this._viewStart)/2);
+  // Fit the entire layout once. Clamping individual edge centers changes
+  // their distance to neighbours and makes a partial period squeeze all bars.
+  const period=this._config.aggregation_period;
+  const from=period==='none'?this._viewStart:periodBounds(this._viewStart,period,this._zone)[0];
+  const to=period==='none'?this._viewEnd:periodBounds(this._viewEnd-1,period,this._zone)[1];
+  const start=Math.min(from,positions.length?positions[0]-band/2:from),end=Math.max(to,positions.length?positions.at(-1)+band/2:to);
+  const scale=(this._viewEnd-this._viewStart)/(end-start);
   this._barLayoutSource=source;this._barLayoutKey=key;
-  return this._barLayoutCache={band,span:band*.76,visible,intervals};
+  return this._barLayoutCache={start,scale,band,span:band*.76,visible,intervals};
  }
  _barGeometry(interval,x,index){
-  const {band,span,visible}=this._barLayout(),grouped=this._config.graph_mode!=='stacked';
+  const {start,scale,span,visible}=this._barLayout(),grouped=this._config.graph_mode!=='stacked';
   const count=grouped?visible.length:1,slot=grouped?visible.indexOf(index):0;
   const a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
-  const center=Math.max(this._viewStart+band/2,Math.min(this._viewEnd-band/2,(a+b)/2));
-  const left=center-span/2+slot*span/count;
-  return {left:x(left),right:x(left+span*.9/count)};
+  const center=this._viewStart+((interval.center??(a+b)/2)-start)*scale;
+  const left=center-span*scale/2+slot*span*scale/count;
+  return {left:x(left),right:x(left+span*scale*.9/count)};
  }
  _barAt(timestamp,index){
   const points=(this._plotSeries??this._series)[index].points;let low=0,high=points.length;
   while(low<high){const middle=(low+high)>>1;if(points[middle].t<=timestamp)low=middle+1;else high=middle;}
   return low?this._barInterval(points,low-1,this._end,index,true):null;
  }
+ _timeAtPlotPosition(ratio){const layout=this._barLayout();return layout.start+ratio*(this._viewEnd-this._viewStart)/layout.scale;}
  _pointerTime(timestamp){
   // An edge bar may be inset beyond its period. Hit-test the painted bars for
   // pointer/touch, while keyboard and synchronized hover keep semantic times.
   const layout=this._barLayout();
-  layout.hits??=layout.intervals.map(({interval,index})=>({...this._barGeometry(interval,t=>t,index),time:(Math.max(this._viewStart,interval.start)+Math.min(this._viewEnd,interval.end))/2}));
-  return layout.hits.find(b=>timestamp>=b.left&&timestamp<=b.right)?.time??timestamp;
+  layout.hits??=layout.intervals.map(({interval,index})=>({...this._barGeometry(interval,t=>t,index),time:(Math.max(this._viewStart,interval.start)+Math.min(this._viewEnd,interval.end))/2})).sort((a,b)=>a.left-b.left);
+  const position=this._viewStart+(timestamp-layout.start)*layout.scale;
+  let low=0,high=layout.hits.length;while(low<high){const mid=(low+high)>>1;if(layout.hits[mid].left<=position)low=mid+1;else high=mid;}
+  const hit=layout.hits[low-1];return hit&&position<=hit.right?hit.time:timestamp;
  }
  _line(points,end,x,y,index=0){
-  let path='';
+  let path='';const dense=new Map(),plotWidth=this.shadowRoot?.querySelector('.plot')?.clientWidth,minimum=plotWidth>0?1000/plotWidth:0;
   for(let i=0;i<points.length;i++){
    const p=points[i],interval=this._barInterval(points,i,Math.min(this._end,end),index,true);
    if(!Number.isFinite(p.v)||interval.end<=this._viewStart||interval.start>=this._viewEnd||interval.end<=interval.start)continue;
    const {left:l,right:r}=this._barGeometry(interval,x,index),base=this._config.graph_mode==='stacked'?(p.base??0):0;
-   path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
+   if(points.length>2000&&minimum&&r-l<minimum){const key=Math.round((l+r)/(2*minimum)),bucket=dense.get(key)??{};const side=p.v>=base?'positive':'negative';if(!bucket[side]||Math.abs(p.v-base)>Math.abs(bucket[side].value-bucket[side].base))bucket[side]={left:l,right:Math.min(1000,Math.max(r,l+minimum)),value:p.v,base};dense.set(key,bucket);}
+   else path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
   }
+  for(const bucket of dense.values())for(const bar of [bucket.positive,bucket.negative])if(bar)path+=`M ${bar.left} ${y(bar.base)} V ${y(bar.value)} H ${bar.right} V ${y(bar.base)} Z `;
   return path.trim();
  }
  _hoverInterval(timestamp){
@@ -1665,8 +1912,13 @@ class BarChartCard extends HistoryGraphCard {
   const t=Math.max(a,Math.min(b-1,timestamp)),period=this._config.aggregation_period;
   const bounds=period==='none'?[this._start,this._end]:periodBounds(t,period,this._zone);
   // Aggregated bars select one whole period; raw intervals retain their edges.
-  const edges=[Math.max(a,bounds[0]),Math.min(b,bounds[1]),...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t).filter(x=>x>a&&x<b&&x>bounds[0]&&x<bounds[1]):[])].sort((x,y)=>x-y);
-  const end=edges.find(x=>x>t)??b,start=edges.filter(x=>x<=t).at(-1)??a;
+  let start=Math.max(a,bounds[0]),end=Math.min(b,bounds[1]);
+  for(let i=0;i<this._series.length;i++){
+   if(!this._isSeriesVisible(i))continue;const points=this._series[i].points;let low=0,high=points.length;
+   while(low<high){const mid=(low+high)>>1;if(points[mid].t<=t)low=mid+1;else high=mid;}
+   const before=points[low-1]?.t,after=points[low]?.t;
+   if(before>start&&before<end)start=before;if(after>t&&after<end&&after<bounds[1])end=after;
+  }
   return {start,end,labelTime:period==='none'?start:bounds[0]};
  }
  _barTime(timestamp){

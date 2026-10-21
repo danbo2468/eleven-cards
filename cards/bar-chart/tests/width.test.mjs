@@ -27,6 +27,14 @@ function assertUniform(c,counts){
  return groups;
 }
 
+test('very dense bars keep positive and negative extremes within the visible pixel budget',()=>{
+ const count=6000,points=[Array.from({length:count},(_,i)=>({t:i,v:i===123?100:i===456?-20:1}))];
+ const card=fixture({config:{aggregation_period:'none'},start:0,end:count,points});
+ card.shadowRoot.querySelector=selector=>selector==='.plot'?{clientWidth:320}:null;
+ const path=card._line(card._plotSeries[0].points,count,t=>t/count*1000,v=>v);
+ assert.ok((path.match(/\bM /g)??[]).length<1000);assert.match(path,/V 100\b/);assert.match(path,/V -20\b/);
+});
+
 test('partial data produces one complete aggregate bar; a wholly missing period stays empty and History retains its gaps',()=>{
  const points=[[{t:0,v:null},{t:H/4,v:10},{t:H/2,v:null},{t:3*H/4,v:30},{t:H,v:null},{t:2*H,v:20}]];
  for(const [method,value] of [['avg',20],['min',10],['max',30]]){
@@ -112,9 +120,9 @@ test('dense bar data is not decimated into omitted periods or wider bars',()=>{
 test('pointer hits on inset edge bars select their real period, while semantic hover and keyboard times stay unchanged',()=>{
  const c=fixture({start:H/6,end:3*H+H/600,points:[[{t:0,v:10},{t:3*H,v:40}]]});
  c._viewport=[H*.95,H*2.02];c._render();
- const [bars]=rectangles(c),duration=c._viewEnd-c._viewStart;
+ const [bars]=rectangles(c);
  for(const [i,bar] of bars.entries()){
-  const pointer=c._viewStart+(bar.left+bar.right)/2000*duration;
+  const pointer=c._timeAtPlotPosition((bar.left+bar.right)/2000);
   const interval=c._hoverInterval(c._pointerTime(pointer));
   assert.equal(interval.labelTime,i*H);
  }
@@ -133,4 +141,40 @@ test('partial edge groups retain visible separation from neighbours and the plot
    for(let i=1;i<bounds.length;i++)assert.ok(bounds[i].left-bounds[i-1].right>=width*.25-1e-8,`${graph_mode}/${sensors}: groups ${i-1} and ${i} retain a visible gap`);
   }
  }
+});
+
+test('regular periods retain exactly equal group spacing at both partial edges and after zoom',()=>{
+ for(const [period,size] of [['minute',H/60],['quarter_hour',H/4],['hour',H],['day',24*H],['week',168*H]]){
+  for(const graph_mode of ['lines','stacked'])for(const sensors of [1,2,3]){
+   const c=fixture({start:size*.997,end:8.217*size,points:Array.from({length:sensors},(_,i)=>[{t:0,v:10+i}]),config:{aggregation_period:period,graph_mode}});
+   for(const viewport of [null,[1.95*size,3.02*size],[2.01*size,2.99*size]]){
+    c._viewport=viewport;c._render();const groups=rectangles(c);
+    const bounds=groups[0].map((_,i)=>({left:Math.min(...groups.map(g=>g[i].left)),right:Math.max(...groups.map(g=>g[i].right))}));
+    const gaps=bounds.slice(1).map((b,i)=>b.left-bounds[i].right);
+    for(const gap of gaps)assert.ok(Math.abs(gap-gaps[0])<1e-8,`${period}/${graph_mode}/${sensors}: ${gaps}`);
+    if(bounds.length===1)assert.ok(bounds[0].right-bounds[0].left>600,'a zoom inside one period keeps a full-width group');
+    assertUniform(c,Array(sensors).fill(bounds.length));
+   }
+  }
+ }
+});
+
+test('missing statistics periods keep their slots between regularly spaced edge bars',()=>{
+ const c=fixture({start:.99*H,end:5.01*H,sources:['statistics'],points:[[{t:0,v:10},{t:H,v:20},{t:3*H,v:30},{t:4*H,v:40},{t:5*H,v:50}]]});
+ const [bars]=assertUniform(c,[5]),centers=bars.map(b=>(b.left+b.right)/2),step=centers[1]-centers[0];
+ assert.ok(Math.abs(centers[2]-centers[1]-2*step)<1e-8,'missing hour reserves one empty slot');
+ for(const i of [3,4])assert.ok(Math.abs(centers[i]-centers[i-1]-step)<1e-8,'last bars keep the same spacing as the first');
+ for(const [i,bar] of bars.entries()){
+  const pointer=c._timeAtPlotPosition((bar.left+bar.right)/2000);
+  assert.equal(c._hoverInterval(c._pointerTime(pointer)).labelTime,[0,H,3*H,4*H,5*H][i]);
+ }
+});
+
+test('axis labels, gap hover and drag selection use the same fitted time scale as the bars',()=>{
+ const c=fixture({start:.99*H,end:5.01*H,sources:['statistics'],points:[[{t:0,v:10},{t:H,v:20},{t:3*H,v:30},{t:4*H,v:40},{t:5*H,v:50}]]});
+ assert.equal(c._timeAtPlotPosition(0),0);assert.equal(c._timeAtPlotPosition(1),6*H);
+ assert.equal(c._timeAtPlotPosition(1/3),2*H);
+ assert.equal(c._hoverInterval(c._pointerTime(c._timeAtPlotPosition(2.5/6))).labelTime,2*H,'gap still selects the missing period');
+ const history=fixture({Card:HistoryGraphCard,start:.99*H,end:5.01*H});
+ assert.equal(history._timeAtPlotPosition(0),.99*H);assert.equal(history._timeAtPlotPosition(1),5.01*H,'History keeps its unpadded time scale');
 });

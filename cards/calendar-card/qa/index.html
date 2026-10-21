@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="nl">
+<head>
+ <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+ <title>Eleven Calendar — lokale test</title>
+ <style>
+ body{margin:0;padding:22px;background:#f2f4f7;font:14px/1.45 system-ui,sans-serif;--primary-text-color:#20252b;--secondary-text-color:#626b78;--card-background-color:#fff;--secondary-background-color:#edf0f4;--divider-color:#dce1e8;--primary-color:#2563eb;color:var(--primary-text-color)}
+ body.dark{background:#14171c;--primary-text-color:#e7e9ee;--secondary-text-color:#a7aeb9;--card-background-color:#22252c;--secondary-background-color:#2d323c;--divider-color:#3c434f;--primary-color:#86b9fb;color-scheme:dark}
+ main{max-width:950px;margin:auto}main.narrow{max-width:340px}h1{font-size:21px;margin:0 0 5px}p{margin:0 0 14px;color:var(--secondary-text-color)}
+ .tools{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}button{font:inherit;min-height:34px;padding:6px 10px;background:var(--card-background-color);color:inherit;border:1px solid var(--divider-color);border-radius:5px;cursor:pointer}
+ ha-card{border:1px solid var(--divider-color);border-radius:12px}eleven-calendar-card{display:block}#editor{margin-top:20px;max-width:700px}#results{white-space:pre-wrap;font-size:12px;margin:14px 0}
+ label{display:flex;flex-direction:column;gap:4px;margin:8px 0}details{border:1px solid var(--divider-color);border-radius:10px;margin:10px 0}summary{padding:12px;cursor:pointer}.form-body{padding:0 12px 12px}input,select{box-sizing:border-box;max-width:100%;min-width:0;font:inherit;color:inherit;background:var(--card-background-color);padding:8px;border:1px solid var(--divider-color)}
+ </style>
+</head>
+<body><main>
+ <h1>Agenda</h1><p>Lokale test met voorbeeldafspraken en voorbeeldweer.</p>
+ <div class="tools"><button id="theme">Licht / donker</button><button id="width">Smalle / brede kaart</button><button id="new-event">Nieuwe afspraak ontvangen</button><button id="editor-button">Configurator tonen</button><button id="audit">Kaart controleren</button><button id="editor-audit">Configurator controleren</button></div>
+ <eleven-calendar-card></eleven-calendar-card><div id="results" role="status"></div><div id="editor"></div>
+ </main>
+ <script src="../dist/eleven-calendar-card.js"></script>
+ <script src="../../heatmap-card/qa/ha-form-fixture.js"></script>
+ <script type="module" src="fixture.js"></script>
+</body></html>

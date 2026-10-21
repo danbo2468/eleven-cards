@@ -1,3 +1,4 @@
+import * as periods from '../../../shared/periods.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -9,7 +10,7 @@ import * as localization from '../src/localization.js';
 const source = readFileSync(new URL('../src/dynamic-energy-price-card.js', import.meta.url), 'utf8');
 let Card;
 vm.runInNewContext(source.replace(/^import\s*\{[\s\S]*?\}\s*from\s*['"][^'"]+['"];\s*/gm, ''), {
-  ...graph, ...utils, ...localization,
+  ...periods,...graph, ...utils, ...localization,
   frontendHass: () => ({ language: 'nl' }),
   document: { querySelector: () => ({ hass: { language: 'nl' } }) },
   HTMLElement: class { attachShadow() { this.shadowRoot = {}; } },

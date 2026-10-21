@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Eleven Agenda — weergavevoorbeelden</title>
+  <link rel="stylesheet" href="layouts.css">
+</head>
+<body>
+  <main>
+    <header class="page-header"><div><h1>Agenda</h1><p>Drie weergaven om te vergelijken. Alle afspraken en weergegevens zijn voorbeelden.</p></div><button type="button" id="theme">Licht / donker</button></header>
+    <form class="settings" aria-label="Voorbeeldinstellingen">
+      <fieldset><legend>Agenda-entiteiten</legend>
+        <label class="calendar-toggle"><input type="checkbox" value="family" checked><span class="dot family"></span>Gezin <small>calendar.gezin</small></label>
+        <label class="calendar-toggle"><input type="checkbox" value="work" checked><span class="dot work"></span>Werk <small>calendar.werk</small></label>
+        <label class="calendar-toggle"><input type="checkbox" value="leisure" checked><span class="dot leisure"></span>Vrije tijd <small>calendar.vrije_tijd</small></label>
+      </fieldset>
+      <div class="settings-fields">
+        <label>Weerentiteit<select id="weather"><option value="home">weather.thuis</option><option value="coast">weather.kust</option><option value="none">Geen weer</option></select></label>
+        <label>Aantal dagen<input id="days" type="number" min="1" max="14" step="1" value="5"></label>
+        <label>Kaartbreedte<select id="width"><option value="360">Smal · 360 px</option><option value="640">Normaal · 640 px</option><option value="1000" selected>Breed · 1000 px</option></select></label>
+      </div>
+    </form>
+    <div id="examples"></div>
+    <noscript>Schakel JavaScript in om de drie voorbeelden te bekijken.</noscript>
+  </main>
+  <script type="module" src="layouts.js"></script>
+</body>
+</html>

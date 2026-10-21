@@ -1,5 +1,5 @@
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 const root=new URL('../',import.meta.url);
-const sources=await Promise.all(['src/overview-utils.js','src/overview-card.js'].map(async p=>(await readFile(new URL(p,root),'utf8')).replace(/^import .*;\s*$/gm,'').replace(/^export /gm,'')));
+const sources=await Promise.all(['../../shared/request.js','../../shared/periods.js','src/overview-utils.js','src/overview-card.js'].map(async p=>(await readFile(new URL(p,root),'utf8')).replace(/^import .*;\s*$/gm,'').replace(/^export /gm,'')));
 const output=`// Eleven Overview (beta) 0.1.0 — self-contained standalone module\n(()=>{\n${sources.join('\n')}\nif(!customElements.get('eleven-overview-card'))customElements.define('eleven-overview-card',OverviewCard);\nwindow.customCards=window.customCards||[];\nif(!window.customCards.some(c=>c.type==='eleven-overview-card'))window.customCards.push({type:'eleven-overview-card',name:'Eleven Overview (beta)',description:'Current sensor values, sparklines and change since period start.',preview:true});\n})();\n`;
 await mkdir(new URL('dist/',root),{recursive:true});await writeFile(new URL('dist/eleven-overview-card.js',root),output);console.log('Built Eleven Overview (beta) 0.1.0');

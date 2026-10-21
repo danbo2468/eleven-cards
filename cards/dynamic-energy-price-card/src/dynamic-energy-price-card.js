@@ -14,6 +14,7 @@ import {
   localDayKey,
   localHour,
   mergePriceSeries,
+  normalizePoints,
   normalizeLineStyle,
   normalizeLineWidth,
   normalizeSelectionMode,
@@ -29,7 +30,15 @@ import {
   zonneplanPriceData,
 } from './price-utils.js';
 import { formatDuration, frontendHass, resolveLanguage, translate } from './localization.js';
+import {timeframeSyncConfig,connectTimeframeSync,disconnectTimeframeSync} from '../../../shared/periods.js';
+import {graphPeriodRange,resetGraphPeriod} from '../../../shared/periods.js';
 import {SharedGraph,graphLineStyle,graphStyles} from '../../../shared/graph.js';
+
+function priceRequestWithTimeout(promise, milliseconds) {
+  let timer;
+  return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('timeout')),milliseconds);timer.unref?.();})])
+    .finally(()=>globalThis.clearTimeout?.(timer));
+}
 
 const SVG_WIDTH = 1000;
 const SVG_HEIGHT = 330;
@@ -44,6 +53,7 @@ const DEFAULT_CONFIG = Object.freeze({
   current_price_mode: 'import',
   show_title: true,
   show_hover_line: true,
+  sync_timeframe: false,
   sync_hover: true,
   hover_sync_group: '',
   show_average_line: false,
@@ -197,7 +207,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   static editorConfig(config = {}) {
     const clone = v => Array.isArray(v) ? v.map(clone) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x])=>[k,clone(x)])) : v;
-    const data = clone({...DEFAULT_CONFIG,...config});
+    const data = clone({...DEFAULT_CONFIG,...config,...timeframeSyncConfig(config,{draft:true})});
     for (const p of ['import','export','consumption']) {
       data[`${p}_line_interpolation`] ??= data.line_interpolation;
       data[`${p}_color_mode`] ??= rgbColorToCss(data[`${p}_line_color`]) ? 'fixed' : p==='consumption' ? 'fixed' : 'price';
@@ -259,7 +269,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
         : [field(p==='import'?'entity':'export_entity')])
     ];
     const schema=[
-      group('graph_settings','Algemeen',['title','show_title','graph_mode','current_price_mode','tomorrow_after','show_average_line','show_price_levels','show_hover_line','sync_hover',...(data.sync_hover?['hover_sync_group']:[])].map(field)),
+      group('graph_settings','Algemeen',['title','show_title','graph_mode','current_price_mode','tomorrow_after','show_average_line','show_price_levels','show_hover_line','sync_hover','sync_timeframe',...(data.sync_hover||data.sync_timeframe?['hover_sync_group']:[])].map(field)),
       group('price_settings','Prijsgrenzen en prijskleuren',[
         ...['cheap_price','normal_price','expensive_price'].map(field),
         group('price_color_settings','Prijskleuren',['cheap_color','normal_color','expensive_color','zero_color','negative_color'].map(field))
@@ -311,8 +321,9 @@ class DynamicEnergyPriceCard extends HTMLElement {
       title: "Titel",
       show_title: "Titel tonen",
       show_hover_line: "Verticale hoverlijn",
+      sync_timeframe: "Tijdvak synchroniseren",
       sync_hover: "Hover synchroniseren",
-      hover_sync_group: "Hover-synchronisatiegroep",
+      hover_sync_group: "Synchronisatiegroep",
       show_average_line: "Gemiddelde prijslijn",
       show_period_average: "Gemiddelde prijs in tabel",
       show_period_day: "Dag in tabel",
@@ -394,6 +405,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
             { name: 'title', selector: { text: {} } },
             { name: 'show_title', default: DEFAULT_CONFIG.show_title, selector: { boolean: {} } },
             { name: 'show_hover_line', default: DEFAULT_CONFIG.show_hover_line, selector: { boolean: {} } },
+            { name: 'sync_timeframe', default: false, selector: { boolean: {} } },
             { name: 'sync_hover', default: true, selector: { boolean: {} } },
             { name: 'hover_sync_group', selector: { text: {} } },
             { name: 'show_average_line', default: DEFAULT_CONFIG.show_average_line, selector: { boolean: {} } },
@@ -516,8 +528,9 @@ class DynamicEnergyPriceCard extends HTMLElement {
         current_price_mode: "Staat los van de gekozen grafiekweergave.",
         show_title: "Verberg de titel om actieve gunstige-urencontext op die plek te tonen.",
         show_hover_line: "Toont een verticale hulplijn bij het actieve prijsinterval.",
+        sync_timeframe: "Volgt het gekozen tijdvak van ingeschakelde kaarten in dezelfde groep. Alleen beschikbare bronprijzen worden getoond.",
         sync_hover: "Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.",
-        hover_sync_group: "Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.",
+        hover_sync_group: "Kaarten met dezelfde groep delen hover en tijdvak als de bijbehorende synchronisatie aanstaat. Leeg gebruikt de standaardgroep.",
         show_average_line: "Toont per zichtbare tariefreeks een gelabeld gemiddelde.",
         show_period_average: "Toont de gemiddelde prijs per periode in de afname- en teruglevertabel, in ct/kWh.",
         show_price_levels: "Toont de lijnen en prijslabels voor goedkoop, normaal en duur.",
@@ -569,12 +582,14 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   setConfig(config) {
     config ??= {};
+    timeframeSyncConfig(config);
     if (config.sync_hover !== undefined && typeof config.sync_hover !== 'boolean') throw new Error('sync_hover');
     if (config.hover_sync_group != null && typeof config.hover_sync_group !== 'string') throw new Error('hover_sync_group');
     SharedGraph.clearHover(this);
     this._config = {
       ...DEFAULT_CONFIG,
       ...config,
+      ...timeframeSyncConfig(config),
     };
     for(const prefix of ['import','export']) {
       if(!['sensor','tibber_prices','zonneplan'].includes(this._config[`${prefix}_source`]))throw Error(`${prefix}_source`);
@@ -602,7 +617,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
     this._observeConsumptionSize();
     this._lastSignature = null;
     this._activeIndex = null;
+    resetGraphPeriod(this);connectTimeframeSync(this);
+    if(this._connected&&this._hass)this._render();
   }
+
+  _reloadPeriod(){this._activeIndex=null;this._chart=null;this._resetConsumption();this._lastSignature=null;if(this._hass)this._render();}
 
   get _language() { return resolveLanguage(this._hass ?? frontendHass()); }
   _t(text, values) { return translate(text, this._language, values); }
@@ -633,6 +652,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   _resetTibber() {
     if(this._tibberTimer)clearTimeout(this._tibberTimer);
     this._tibberTimer=undefined;
+    this._tibberRefreshAt=undefined;
     this._tibberCache = new Map();
   }
 
@@ -642,11 +662,16 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   _scheduleTibberRefresh() {
-    if(!this.isConnected || this._tibberTimer)return;
+    if(!this.isConnected)return;
+    const now=Date.now(),next=Math.min(...[...(this._tibberCache?.values()??[])].filter(item=>item.status!=='loading').map(item=>item.fetchedAt+(item.status==='ready'||item.status==='currency'?300000:60000)));
+    if(!Number.isFinite(next))return;
+    if(this._tibberTimer&&this._tibberRefreshAt<=next)return;
+    clearTimeout(this._tibberTimer);this._tibberRefreshAt=next;
     this._tibberTimer=setTimeout(()=>{
-      this._resetTibber();
+      const due=this._tibberRefreshAt;this._tibberTimer=undefined;this._tibberRefreshAt=undefined;
+      for(const [key,item] of this._tibberCache??[])if(item.status!=='loading'&&item.fetchedAt+(item.status==='ready'||item.status==='currency'?300000:60000)<=due)this._tibberCache.delete(key);
       if(this.isConnected && this._hass)this._render();
-    },300000);
+    },Math.max(0,next-now));
   }
 
   _watchTibberConnection() {
@@ -675,7 +700,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const key=this._tibberKey(prefix);
     this._tibberCache ??= new Map();
     const previous=this._tibberCache.get(key);
-    if(previous && (previous.status==='loading' || Date.now()-previous.fetchedAt<300000)) {
+    if(previous && (previous.status==='loading' || Date.now()-previous.fetchedAt<(previous.status==='ready'||previous.status==='currency'?300000:60000))) {
       if(previous.status!=='loading')this._scheduleTibberRefresh();
       return;
     }
@@ -690,7 +715,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
         const service_data=tibberPriceRange(new Date(),zone);
         const entry=this._config[`${prefix}_tibber_entry`];
         if(entry)service_data.entry_id=entry;
-        const {response}=await this._hass.callWS({type:'call_service',domain:'tibber_prices',service:'get_price',service_data,return_response:true});
+        const {response}=await priceRequestWithTimeout(this._hass.callWS({type:'call_service',domain:'tibber_prices',service:'get_price',service_data,return_response:true}),15000);
         if(this._tibberCache?.get(key)!==request)return;
         Object.assign(request,{status:'ready',data:tibberPriceData(response),fetchedAt:Date.now()});
       } catch(error) {
@@ -752,6 +777,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   connectedCallback() {
+    this._connected=true;connectTimeframeSync(this);
     SharedGraph.connectHover(this, timestamp => this._receiveHover(timestamp));
     this._watchTibberConnection();
     window.addEventListener('pointerdown', this._onOutsidePointer);
@@ -761,12 +787,15 @@ class DynamicEnergyPriceCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._connected=false;disconnectTimeframeSync(this);
     SharedGraph.disconnectHover(this);
     this._unwatchTibberConnection();
     window.removeEventListener('pointerdown', this._onOutsidePointer);
     this._unwatchConsumptionConnection();
     this._consumptionResizeObserver?.disconnect();
     this._consumptionResizeObserver = undefined;
+    if(this._consumptionResizeFrame!=null)cancelAnimationFrame(this._consumptionResizeFrame);
+    this._consumptionResizeFrame=null;
     this._resetConsumption();
     this._resetTibber();
   }
@@ -782,7 +811,10 @@ class DynamicEnergyPriceCard extends HTMLElement {
       const width = entries[0]?.contentRect.width;
       if (!width || width === this._consumptionWidth) return;
       this._consumptionWidth = width;
-      if (this._hass && this._config?.show_consumption) this._render();
+      if (this._hass && this._config?.show_consumption && this._consumptionResizeFrame==null) {
+        if(typeof requestAnimationFrame!=='function'){this._render();return;}
+        this._consumptionResizeFrame=requestAnimationFrame(()=>{this._consumptionResizeFrame=null;if(this.isConnected)this._render();});
+      }
     });
     this._consumptionResizeObserver.observe(this);
   }
@@ -808,8 +840,17 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   _resetConsumption() {
     this._consumptionGeneration = (this._consumptionGeneration ?? 0) + 1;
+    globalThis.clearTimeout?.(this._consumptionRefreshTimer);this._consumptionRefreshTimer=undefined;
     this._consumption = undefined;
     this._consumptionRequest = undefined;
+  }
+
+  _scheduleConsumptionRefresh() {
+    globalThis.clearTimeout?.(this._consumptionRefreshTimer);this._consumptionRefreshTimer=undefined;
+    const current=this._consumption;
+    if(!this.isConnected||!current?.fetchedAt||!['ready','partial','empty','error'].includes(current.status))return;
+    const delay=current.status==='error'?60000:300000;
+    this._consumptionRefreshTimer=setTimeout(()=>{this._consumptionRefreshTimer=undefined;if(this.isConnected&&this._hass)this._render();},Math.max(0,current.fetchedAt+delay-Date.now()));
   }
 
   _ensureConsumption(start, end, intervalMinutes) {
@@ -829,7 +870,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     }
     const key = `${entity}|${start}|${end}|${intervalMinutes}`;
     if (this._consumptionRequest?.key === key) return;
-    if (this._consumption?.key === key && Date.now() - this._consumption.fetchedAt < 300000) return;
+    if (this._consumption?.key === key && Date.now() - this._consumption.fetchedAt < (this._consumption.status==='error'?60000:300000)) return;
     const generation = this._consumptionGeneration;
     const hass = this._hass;
     const request = { key };
@@ -845,14 +886,14 @@ class DynamicEnergyPriceCard extends HTMLElement {
       const until = Math.min(end, now);
       try {
         const query = new URLSearchParams({ filter_entity_id: entity, end_time: new Date(until).toISOString(), minimal_response: '', no_attributes: '', skip_initial_state: '', significant_changes_only: '0' });
-        const history = await hass.callApi('GET', `history/period/${new Date(start - 300000).toISOString()}?${query}`);
+        const history = await priceRequestWithTimeout(hass.callApi('GET', `history/period/${new Date(start - 300000).toISOString()}?${query}`),15000);
         if (!current()) return;
         points = consumptionFromHistory(history?.[0] ?? [], start, end, intervalMinutes, now);
       } catch { historyFailed = true; }
       if (!current()) return;
       if (!points.some(point => Number.isFinite(point.energy)) && until - start >= 3600000) {
         try {
-          const statistics = await hass.callWS({ type: 'recorder/statistics_during_period', start_time: new Date(start).toISOString(), end_time: new Date(until).toISOString(), statistic_ids: [entity], period: 'hour', types: ['change'], units: { energy: 'kWh' } });
+          const statistics = await priceRequestWithTimeout(hass.callWS({ type: 'recorder/statistics_during_period', start_time: new Date(start).toISOString(), end_time: new Date(until).toISOString(), statistic_ids: [entity], period: 'hour', types: ['change'], units: { energy: 'kWh' } }),15000);
           points = consumptionFromStatistics(statistics?.[entity] ?? [], start, end, now);
           cadence = 60;
           source = 'statistics';
@@ -861,6 +902,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
           this._consumption = { key, fetchedAt: Date.now(), status: 'error', points: [], intervalMinutes };
           this._consumptionRequest = undefined;
           this._render();
+          this._scheduleConsumptionRefresh();
           return;
         }
       }
@@ -870,6 +912,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
         status: available ? (available < points.length ? 'partial' : 'ready') : historyFailed ? 'error' : 'empty' };
       this._consumptionRequest = undefined;
       this._render();
+      this._scheduleConsumptionRefresh();
     })();
   }
 
@@ -916,11 +959,17 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const timeZone = this._hass.config.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = new Date();
     const rawImportData = importState.attributes?.data;
-    const importPoints = getVisiblePoints(rawImportData, now, timeZone, this._config.tomorrow_after);
+    const sharedRange=this._sharedTimeframe?graphPeriodRange(this):null;
+    const visible=data=>{
+      if(!sharedRange)return getVisiblePoints(data,now,timeZone,this._config.tomorrow_after);
+      const points=normalizePoints(data,timeZone),interval=inferIntervalMinutes(points)*60000;
+      return points.filter(p=>p.timestamp<sharedRange.end&&p.timestamp+interval>sharedRange.start);
+    };
+    const importPoints = visible(rawImportData);
     if (!importPoints.length) {
       this.shadowRoot.innerHTML = this._stateCard(
         this._t("Nog geen prijsgegevens"),
-        this._t("De afname-entiteit bevat geen prijsintervallen voor vandaag."),
+        sharedRange?this._t("De prijsbron bevat geen prijsintervallen voor het gekozen tijdvak."):this._t("De afname-entiteit bevat geen prijsintervallen voor vandaag."),
       );
       return;
     }
@@ -934,7 +983,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
       ? offsetPriceData(exportState.attributes?.data, exportOffset)
       : null;
     const exportPoints = rawExportData
-      ? getVisiblePoints(rawExportData, now, timeZone, this._config.tomorrow_after)
+      ? visible(rawExportData)
       : [];
     const timeline = mergePriceSeries(importPoints, exportPoints);
     const graphIncludesImport = IMPORT_MODES.has(this._config.graph_mode);
@@ -975,9 +1024,10 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const expensivePrice = Number(this._config.expensive_price);
     const svgWidth = SVG_WIDTH;
     const svgHeight = SVG_HEIGHT;
-    const start = timeline[0].timestamp;
-    const end = timeline.at(-1).timestamp + intervalMs;
-    this._ensureConsumption(start, end, intervalMinutes);
+    const start = sharedRange?.start??timeline[0].timestamp;
+    const end = sharedRange?.end??(timeline.at(-1).timestamp + intervalMs);
+    const consumptionStart=sharedRange?Math.ceil(start/intervalMs)*intervalMs:start;
+    this._ensureConsumption(consumptionStart, end, intervalMinutes);
     const consumptionEnabled = this._config.show_consumption === true;
     const graphShowsConsumption = consumptionEnabled && !this._hiddenSeries.has('consumption');
     const consumptionPoints = this._consumption?.points ?? [];
@@ -986,7 +1036,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const plotRight = PLOT.right + (graphShowsConsumption ? 32 * svgWidth / chartPixels : 0);
     const plotWidth = svgWidth - PLOT.left - plotRight;
     const plotHeight = svgHeight - PLOT.top - PLOT.bottom;
-    const span = Math.max(intervalMs, end - start);
+    const span = Math.max(sharedRange?1:intervalMs, end - start);
     const visiblePrices = timeline.flatMap((point) => [
       ...(graphShowsImport && Number.isFinite(point.importPrice) ? [point.importPrice] : []),
       ...(graphShowsExport && Number.isFinite(point.exportPrice) ? [point.exportPrice] : []),
@@ -997,7 +1047,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const minimum = Math.max(-1, rawMin - range * 0.12);
     const maximum = rawMax + range * 0.12;
     const yRange = maximum - minimum;
-    const xFor = (timestamp) => PLOT.left + ((timestamp - start) / span) * plotWidth;
+    const xFor = (timestamp) => PLOT.left + (sharedRange?Math.max(0,Math.min(1,(timestamp-start)/span)):(timestamp-start)/span) * plotWidth;
     const yFor = (price) => PLOT.top + ((maximum - price) / yRange) * plotHeight;
     const importPath = graphShowsImport ? seriesPath(timeline, 'importPrice', xFor, yFor, intervalMs, this._config.import_line_interpolation ?? this._config.line_interpolation) : '';
     const exportPath = graphShowsExport ? seriesPath(timeline, 'exportPrice', xFor, yFor, intervalMs, this._config.export_line_interpolation ?? this._config.line_interpolation) : '';
@@ -1122,7 +1172,7 @@ class DynamicEnergyPriceCard extends HTMLElement {
     }).join('');
     const dayLabels = [...groups.values()].map((dayPoints, index) => {
       const x = Math.max(PLOT.left + 8, xFor(dayPoints[0].timestamp) + 10);
-      return `<span class="chart-label day-label" style="left:${(x / svgWidth) * 100}%">${index === 0 ? this._t("Vandaag") : this._t("Morgen")} · ${this._formatDay(dayPoints[0].timestamp, timeZone)}</span>`;
+      return `<span class="chart-label day-label" style="left:${(x / svgWidth) * 100}%">${sharedRange?'':`${index === 0 ? this._t("Vandaag") : this._t("Morgen")} · `}${this._formatDay(dayPoints[0].timestamp, timeZone)}</span>`;
     }).join('');
 
     const todayKey = localDayKey(now, timeZone);
@@ -1140,14 +1190,14 @@ class DynamicEnergyPriceCard extends HTMLElement {
       if (text) statusParts.push(this._t(text));
     }
     if (missingTotal) statusParts.push(`${missingTotal} ${missingTotal === 1 ? this._t("prijsinterval ontbreekt") : this._t("prijsintervallen ontbreken")}`);
-    if (showTomorrow && !tomorrowPoints.length) statusParts.push(this._t("Morgenprijzen ontbreken"));
-    else if (showTomorrow && tomorrowMinutes < 24 * 60) statusParts.push(this._t("Morgenprijzen zijn onvolledig"));
+    if (!sharedRange && showTomorrow && !tomorrowPoints.length) statusParts.push(this._t("Morgenprijzen ontbreken"));
+    else if (!sharedRange && showTomorrow && tomorrowMinutes < 24 * 60) statusParts.push(this._t("Morgenprijzen zijn onvolledig"));
     const dataStatus = statusParts.length
       ? `<div class="data-status warning">${statusParts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<i aria-hidden="true">·</i>')}</div>`
       : '';
 
-    const currentImport = findCurrentPoint(importPoints, now);
-    const currentExport = findCurrentPoint(exportPoints, now);
+    const currentImport = findCurrentPoint(getVisiblePoints(rawImportData,now,timeZone,this._config.tomorrow_after), now);
+    const currentExport = findCurrentPoint(getVisiblePoints(rawExportData,now,timeZone,this._config.tomorrow_after), now);
     const currentCards = [];
     if (currentShowsImport) currentCards.push(this._currentMetric(this._t("Afname"), currentImport, 'import', importSelected, cheapestEnabled));
     if (currentShowsExport) currentCards.push(this._currentMetric(this._t("Teruglevering"), currentExport, 'export', exportSelected, exportBestEnabled));

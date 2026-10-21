@@ -16,6 +16,14 @@ function fixture(slug,config={}){
  c._lastLoad={at:1700000000000,start:0,end:3*H,sources:c._config.entities.map(id=>({id,source:slug==='timeline-card'?'history':'statistics'}))};c._render();return c;
 }
 const button=(html,action)=>html.match(new RegExp(`<button[^>]*data-zoom="${action}"[^>]*>`))?.[0];
+test('information headings use each chart’s series or state color',()=>{
+ for(const slug of ['history-graph-card','bar-chart','timeline-card']){
+  const c=fixture(slug),section=c.shadowRoot.innerHTML.match(/<section class="insight-sensor" data-information-entity="sensor.a">[\s\S]*?<\/section>/)?.[0];
+  assert.ok(section,slug);
+  assert.match(section,/class="insight-color"/);
+  assert.ok(section.includes(`--insight-color:${c._insightColor(0)}`),slug);
+ }
+});
 test('zoom availability respects full windows, minimum width and loading',()=>{
  const host={_status:'ready',_start:0,_end:H};
  assert.deepEqual(chartZoomState(host),{zoomed:false,in:true,out:false,reset:false});
@@ -30,7 +38,8 @@ for(const slug of ['history-graph-card','bar-chart','timeline-card']){
   assert.match(button(c.shadowRoot.innerHTML,'out'),/ disabled/);assert.match(button(c.shadowRoot.innerHTML,'reset'),/ disabled/);
   assert.doesNotMatch(c.shadowRoot.innerHTML,/<span class="zoom-status">/);
   c._zoom(.5);assert.match(c.shadowRoot.innerHTML,/<span class="zoom-status">Ingezoomd/);
-  assert.doesNotMatch(c.shadowRoot.innerHTML,/class="chart-context"|class="period-panel"/);
+  const outsideHeader=c.shadowRoot.innerHTML.replace(/<header class="card-header">[^]*?<\/header>/,'');
+  assert.doesNotMatch(outsideHeader,/class="chart-context"|class="period-panel"/);
   assert.match(c.shadowRoot.innerHTML,/class="period-current-range"[^]*?<span class="zoom-status">Ingezoomd/);
   assert.doesNotMatch(button(c.shadowRoot.innerHTML,'out'),/ disabled/);assert.doesNotMatch(button(c.shadowRoot.innerHTML,'reset'),/ disabled/);
   c._zoom(2);assert.doesNotMatch(c.shadowRoot.innerHTML,/<span class="zoom-status">/);assert.match(button(c.shadowRoot.innerHTML,'reset'),/ disabled/);

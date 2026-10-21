@@ -1,3 +1,4 @@
+import * as periods from '../shared/periods.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -7,7 +8,7 @@ import * as utils from '../cards/dynamic-energy-price-card/src/price-utils.js';
 import * as localization from '../cards/dynamic-energy-price-card/src/localization.js';
 function load(language='en') {
   let Card;
-  const ctx=vm.createContext({...graph,...utils,...localization,frontendHass:()=>({language}),HTMLElement:class {},window:{},document:{querySelector:()=>({hass:{language}})},customElements:{get:()=>undefined,define:(_,c)=>Card=c},setTimeout,clearTimeout,Date,Intl});
+  const ctx=vm.createContext({...periods,...graph,...utils,...localization,frontendHass:()=>({language}),HTMLElement:class {},window:{},document:{querySelector:()=>({hass:{language}})},customElements:{get:()=>undefined,define:(_,c)=>Card=c},setTimeout,clearTimeout,Date,Intl});
   const source=readFileSync(new URL('../cards/dynamic-energy-price-card/src/dynamic-energy-price-card.js',import.meta.url),'utf8').replace(/^import[^;]+;\s*/gm,'').replace(/^export /gm,'');
   vm.runInContext(source,ctx);return {Card,ctx};
 }

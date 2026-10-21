@@ -1,6 +1,6 @@
 import {readFile,mkdir,writeFile,rename} from 'node:fs/promises';
 const root=new URL('../',import.meta.url);
-const sources=['../../shared/graph.js','../../shared/card-header.js','../../shared/periods.js','../../shared/period-controls.js','../../shared/chart-insights.js','src/history-utils.js','src/localization.js','src/eleven.js','src/library.js','src/history-graph-card.js'];
+const sources=['../../shared/graph.js','../../shared/ui-button.js','../../shared/ui-legend.js','../../shared/ui-tabs.js','../../shared/ui-popup.js','../../shared/card-header.js','../../shared/request.js','../../shared/periods.js','../../shared/period-controls.js','../../shared/chart-insights.js','src/history-utils.js','src/localization.js','src/eleven.js','src/library.js','src/history-graph-card.js'];
 const {version}=JSON.parse(await readFile(new URL('package.json',root),'utf8'));
 const library=await readFile(new URL('src/library.js',root),'utf8');
 if(!library.includes(`ELEVEN_VERSION='${version}'`))throw new Error('Library/package version mismatch');

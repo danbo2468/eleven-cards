@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eleven Cards — tijdvaksynchronisatie</title>
+<style>
+body{margin:0;padding:20px;font:14px system-ui;background:#f4f5f6;color:var(--primary-text-color);--primary-text-color:#20252b;--secondary-text-color:#626970;--card-background-color:#fff;--divider-color:#d4d9df;--secondary-background-color:#edf0f3;--primary-color:#2563eb}body.dark{background:#111418;--card-background-color:#20252b;--primary-text-color:#e5e7eb;--secondary-text-color:#b0b6be;--divider-color:#59616d;--secondary-background-color:#303842}main{max-width:1000px;margin:auto}main.narrow{max-width:320px}.tools{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}button,select,input{font:inherit;padding:8px;color:inherit;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:5px}label{display:flex;flex-direction:column;gap:4px;margin:8px 0}.card{margin-bottom:20px}ha-card{display:block;border:1px solid var(--divider-color);border-radius:12px}#editor{margin-top:24px}details{border:1px solid var(--divider-color);border-radius:12px;margin:12px 0}summary{padding:12px;cursor:pointer}.form-body{padding:0 12px 12px}fieldset{min-width:0}#result{white-space:pre-wrap;overflow-wrap:anywhere}
+</style></head><body><main>
+<p>Synthetische gegevens. History, Bar Chart, Timeline en Heatmap bedienen de groep. Overview en Energy volgen.</p>
+<div class="tools"><button id="theme">Licht / donker</button><button id="width">320 / 1000 px</button><button id="audit">Synchronisatie controleren</button><button id="edit">Heatmap-editor tonen</button></div>
+<button id="tabs-audit">Tabbladen controleren</button><button id="popups-audit">Popups controleren</button><button id="custom-audit">Eigen datumbereik controleren</button><button id="custom-layout">Datumbereik-layout controleren</button><div id="cards"></div><output id="result" role="status"></output><div id="editor"></div>
+</main><script src="../../../dist/eleven-cards.js"></script><script src="ha-form-fixture.js"></script><script type="module">
+const H=3600000,now=Date.now(),prices=Array.from({length:96},(_,i)=>({start_time:new Date(Math.floor(now/H)*H-72*H+i*H).toISOString(),price_per_kwh:.12+.06*Math.sin(i*.3)}));
+window.qaHass={language:'nl',locale:{language:'nl'},config:{time_zone:'Europe/Amsterdam'},states:{'sensor.synthetic':{state:'999',attributes:{unit_of_measurement:'W',friendly_name:'Voorbeeldsensor'}},'sensor.price':{state:'.15',attributes:{data:prices}}},callWS:async()=>[],callApi:async(_,url)=>{
+ const start=Date.parse(decodeURIComponent(url.split('history/period/')[1].split('?')[0])),end=Date.parse(new URLSearchParams(url.split('?')[1]).get('end_time')),rows=[];
+ for(let t=start-H;t<end;t+=H)rows.push({entity_id:'sensor.synthetic',last_changed:new Date(t).toISOString(),state:String(200+Math.round(120*Math.sin(t/H*.2))),attributes:{unit_of_measurement:'W'}});
+ return [rows];
+}};
+window.cards=['history-graph-card','bar-chart','timeline-card','heatmap-card','overview-card','dynamic-energy-price-card'].map((slug,i)=>{
+ const card=document.createElement('eleven-'+slug);card.className='card';card.setConfig({title:['History','Bar Chart','Timeline','Heatmap','Overview','Energy'][i],entities:['sensor.synthetic'],entity:i===5?'sensor.price':'sensor.synthetic',hours_to_show:i===3?168:24,data_source:'history',aggregation_period:'hour',sync_timeframe:true,hover_sync_group:'energie'});card.hass=qaHass;document.getElementById('cards').append(card);return card;
+});
+document.getElementById('theme').onclick=()=>document.body.classList.toggle('dark');
+document.getElementById('width').onclick=()=>document.querySelector('main').classList.toggle('narrow');
+document.getElementById('edit').onclick=async()=>{const editor=await cards[3].constructor.getConfigElement();editor.setConfig(cards[3]._config);editor.hass=qaHass;editor.addEventListener('config-changed',e=>cards[3].setConfig(e.detail.config));document.getElementById('editor').replaceChildren(editor);window.editor=editor;};
+const settle=()=>new Promise(r=>setTimeout(r,40));
+document.getElementById('popups-audit').onclick=async()=>{
+ const results=[];window.qaPopupResults=results;window.qaPopupError=null;
+ const check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+ try{
+  await cards[0]._setPeriod('configured');await settle();
+  for(const card of cards.slice(0,4)){
+   const name=card.localName;card.scrollIntoView({block:'center'});await settle();
+   card.shadowRoot.querySelector('[data-insight]').click();await settle();
+   let info=card.shadowRoot.querySelector('.insight-popup');
+   check(name+' information uses the generic popup and focuses close',info.hasAttribute('data-ui-popup')&&info.matches(':popover-open')&&card.shadowRoot.activeElement?.hasAttribute('data-ui-popup-close'));
+   card._render();await settle();info=card.shadowRoot.querySelector('.insight-popup');
+   check(name+' restores information and focus after rendering',info.matches(':popover-open')&&card.shadowRoot.activeElement?.hasAttribute('data-insight-close'));
+   card.shadowRoot.querySelector('[data-period="menu"]').click();await settle();
+   let menu=card.shadowRoot.querySelector('.period-menu');
+   check(name+' period popup closes information',menu.matches(':popover-open')&&!info.matches(':popover-open')&&card._insightOpen===null);
+   card.shadowRoot.querySelector('[data-insight]').click();await settle();
+   check(name+' information closes the period popup',info.matches(':popover-open')&&!menu.matches(':popover-open')&&!card._periodMenuOpen);
+   info.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await settle();
+   check(name+' Escape closes information and restores trigger focus',!info.matches(':popover-open')&&card._insightOpen===null&&card.shadowRoot.activeElement?.dataset.insight==='data');
+  }
+ }catch(error){window.qaPopupError=error.stack;}
+ document.getElementById('result').textContent=JSON.stringify(results,null,2);
+};
+document.getElementById('tabs-audit').onclick=async()=>{
+ const results=[];window.qaTabResults=results;window.qaTabError=null;
+ const check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+ try{
+  await cards[0]._setPeriod('7d');await settle();
+  for(const card of cards.slice(0,4)){
+   const name=card.localName,selection=card._sharedTimeframe,start=card._start,end=card._end;
+   card.scrollIntoView({block:'center'});await settle();card.shadowRoot.querySelector('[data-period="menu"]').click();await settle();
+   let menu=card.shadowRoot.querySelector('.period-menu');
+   const tabs=[...menu.querySelectorAll('[role="tab"]')];
+   check(name+' has three named tabs and a visible default',tabs.map(t=>t.textContent).join('|')==='Afgelopen|Kalender|Eigen bereik'&&!!menu.querySelector('[data-period-option="configured"]').getBoundingClientRect().height);
+   const heights=[];
+   for(const id of ['rolling','calendar','custom']){
+    menu.querySelector('[data-period-tab="'+id+'"]').click();await settle();
+    check(name+' only shows '+id,[...menu.querySelectorAll('[data-period-panel]')].filter(p=>!p.hidden).map(p=>p.dataset.periodPanel).join()===id);
+    heights.push({tab:id,height:menu.getBoundingClientRect().height});
+   }
+   check(name+' tab switches do not change the group',cards.slice(0,4).every(c=>c._sharedTimeframe===selection&&c._start===start&&c._end===end));
+   const input=menu.querySelector('[name="start"]');input.value='2026-10-01T10:30';input.dispatchEvent(new Event('input',{bubbles:true}));
+   menu.querySelector('[data-period-tab="calendar"]').click();await settle();
+   card._render();await settle();menu=card.shadowRoot.querySelector('.period-menu');
+   check(name+' preserves tab and focus after refresh',!menu.querySelector('[data-period-panel="calendar"]').hidden&&card.shadowRoot.activeElement?.dataset.periodTab==='calendar');
+   menu.querySelector('[data-period-tab="custom"]').click();check(name+' keeps custom draft across tabs',menu.querySelector('[name="start"]').value==='2026-10-01T10:30');
+   menu.querySelector('[data-period-tab="rolling"]').click();
+   const tab=menu.querySelector('[data-period-tab="rolling"]');tab.focus();tab.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+   check(name+' supports tab arrow navigation',card.shadowRoot.activeElement?.dataset.periodTab==='calendar'&&!menu.querySelector('[data-period-panel="calendar"]').hidden);
+   menu.querySelector('[data-period-option="month"]').click();await settle();
+   check(name+' calendar choice synchronizes',cards.slice(0,4).every(c=>c._periodMode==='month')&&!card._periodMenuOpen);
+   card.shadowRoot.querySelector('[data-period="menu"]').click();await settle();menu=card.shadowRoot.querySelector('.period-menu');
+   check(name+' reopens the selected category',!menu.querySelector('[data-period-panel="calendar"]').hidden);
+   check(name+' calendar selection clears the default check',menu.querySelector('[data-period-option="configured"]').getAttribute('aria-checked')==='false'&&menu.querySelector('[data-period-option="configured"] span:last-child').textContent.trim()==='');
+   menu.querySelector('[data-period-option="configured"]').click();await settle();
+   check(name+' default restores each card own configured range',cards.slice(0,5).every(c=>c._periodMode==='configured'&&c._end-c._start===c._config.hours_to_show*H));
+   card.shadowRoot.querySelector('[data-period="menu"]').click();await settle();menu=card.shadowRoot.querySelector('.period-menu');
+   const standard=menu.querySelector('[data-period-option="configured"]');
+   check(name+' default has the only selected check',standard.getAttribute('aria-checked')==='true'&&standard.querySelector('span:last-child').textContent.trim()==='✓'&&menu.querySelectorAll('[aria-checked="true"]').length===1&&standard.getBoundingClientRect().height>0);
+   menu.querySelector('[data-period-tab="custom"]').click();await settle();
+   check(name+' browsing tabs keeps the default selected',standard.getAttribute('aria-checked')==='true'&&standard.getBoundingClientRect().height>0&&card._periodMode==='configured');
+   menu.querySelector('[data-period="close"]').click();await cards[0]._setPeriod('7d');await settle();
+   results.push({name:name+' popup heights',ok:true,heights});
+  }
+ }catch(error){window.qaTabError=error.stack;}
+ document.getElementById('result').textContent=JSON.stringify(results,null,2);
+};
+document.getElementById('custom-layout').onclick=async()=>{
+ const results=[];window.qaLayoutResults=results;window.qaLayoutError=null;
+ try{
+  for(const card of cards.slice(0,4)){
+   card.scrollIntoView({block:'center'});await settle();card.shadowRoot.querySelector('[data-period="menu"]').click();await settle();
+   const menu=card.shadowRoot.querySelector('.period-menu');menu.querySelector('[data-period-tab="custom"]').click();await settle();menu.scrollTop=menu.scrollHeight;
+   const rect=menu.getBoundingClientRect(),controls=[...menu.querySelectorAll('input,button[type="submit"]')];
+   const ok=rect.width>0&&rect.left>=0&&rect.right<=innerWidth&&rect.top>=0&&rect.bottom<=innerHeight+1&&menu.scrollWidth<=menu.clientWidth+1&&controls.every(c=>{const r=c.getBoundingClientRect();return r.width>0&&r.left>=rect.left&&r.right<=rect.right;});
+   results.push({name:card.localName,ok,menuWidth:rect.width,viewport:innerWidth,overflow:menu.scrollWidth-menu.clientWidth});if(!ok)throw Error(card.localName+' layout');
+   card.shadowRoot.querySelector('[data-period="close"]').click();
+  }
+ }catch(error){window.qaLayoutError=error.stack;}
+ document.getElementById('result').textContent=JSON.stringify(results,null,2);
+};
+document.getElementById('custom-audit').onclick=async()=>{
+ const results=[];window.qaCustomResults=results;window.qaCustomError=null;
+ const check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+ const local=t=>{const parts=Object.fromEntries(new Intl.DateTimeFormat('sv-SE',{timeZone:qaHass.config.time_zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(t).filter(p=>p.type!=='literal').map(p=>[p.type,p.value]));return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;};
+ try{
+  const end=Math.floor((Date.now()-2*H)/60000)*60000,start=end-49.5*H;
+  for(const card of cards.slice(0,4)){
+   const name=card.localName;card.shadowRoot.querySelector('[data-period="menu"]').click();await settle();
+   let menu=card.shadowRoot.querySelector('.period-menu');menu.querySelector('[data-period-tab="custom"]').click();await settle();
+   let form=menu.querySelector('form'),fields=form.elements;
+   for(const [key,value]of [['start',local(start)],['end',local(start-H)]]){fields.namedItem(key).value=value;fields.namedItem(key).dispatchEvent(new Event('input',{bubbles:true}));}
+   const previous=card._start;form.requestSubmit();await settle();
+   check(name+' rejects reversed dates without changing range',!form.querySelector('.period-custom-error').hidden&&card._start===previous&&card._periodMenuOpen);
+   fields.namedItem('end').value=local(end);fields.namedItem('end').dispatchEvent(new Event('input',{bubbles:true}));fields.namedItem('start').focus();
+   card._render();await settle();menu=card.shadowRoot.querySelector('.period-menu');form=menu.querySelector('form');
+   check(name+' preserves draft and focus after refresh',form.elements.namedItem('start').value===local(start)&&form.elements.namedItem('end').value===local(end)&&card.shadowRoot.activeElement?.name==='start'&&!menu.querySelector('[data-period-panel="custom"]').hidden);
+   form.requestSubmit();await settle();
+   check(name+' applies custom bounds to all history cards',cards.slice(0,5).every(c=>c._start===start&&c._end===end&&c._status==='ready'));
+   check(name+' applies exact price domain',cards[5]._chart.start===start&&cards[5]._chart.span===end-start);
+   check(name+' closes picker and names custom range',!card._periodMenuOpen&&!card.shadowRoot.querySelector('.period-trigger').textContent.includes('Standaard'));
+   card.shadowRoot.querySelector('[data-period="previous"]').click();await settle();
+   check(name+' shifts custom duration for the group',cards.slice(0,5).every(c=>c._start===start-(end-start)&&c._end===start));
+  }
+  await cards[0]._setPeriod('configured');await settle();check('custom reset restores each configured range',cards.slice(0,5).every(c=>c._end-c._start===c._config.hours_to_show*H));
+ }catch(error){window.qaCustomError=error.stack;}
+ document.getElementById('result').textContent=results.map(r=>`${r.ok?'✓':'✗'} ${r.name}`).join('\n');
+};
+document.getElementById('audit').onclick=async()=>{
+ const results=[];window.qaSyncResults=results;window.qaSyncError=null;
+ const check=(name,ok)=>{results.push({name,ok:!!ok});if(!ok)throw Error(name);};
+ try{
+  await cards[0]._setPeriod('7d');await settle();
+  const match=()=>cards.slice(0,5).every(c=>c._start===cards[0]._start&&c._end===cards[0]._end);
+  check('all history cards share the same range',match());check('all history cards have data',cards.slice(0,5).every(c=>c._status==='ready'));check('price domain follows the group',cards[5]._chart.start===cards[0]._start&&cards[5]._chart.span===cards[0]._end-cards[0]._start);
+  cards[3].shadowRoot.querySelector('[data-period="previous"]').click();await settle();check('heatmap navigation updates the group',match()&&cards[1]._periodOffset===-1);
+  check('Overview shows a historical value',!cards[4].shadowRoot.querySelector('.value').textContent.includes('999'));
+  cards[1]._viewport=[cards[1]._start+H,cards[1]._end-H];cards[1]._render();check('zoom stays local',cards[0]._viewport==null&&cards[3]._start===cards[0]._start);
+  const old=cards[3]._config;cards[3].setConfig({...old,sync_timeframe:false});await cards[0]._setPeriod('24h');await settle();check('disabled card keeps its own default',cards[3]._end-cards[3]._start===168*H);
+  cards[3].setConfig({...old,hover_sync_group:'apart'});await cards[0]._setPeriod('48h');await settle();check('other group stays independent',cards[3]._end-cards[3]._start===168*H);
+  cards[3].setConfig(old);await settle();check('joining adopts the current selection',match());
+  const detached=cards[2];detached.remove();await cards[0]._setPeriod('today');document.getElementById('cards').append(detached);await settle();check('reattaching adopts the current selection',match());
+  await cards[0]._setPeriod('configured');await settle();
+  check('Default restores each card\'s own hours',cards.slice(0,5).every(c=>c._end-c._start===c._config.hours_to_show*H&&c._sharedTimeframe===null));
+  check('Default shows each card\'s own picker label',cards[0].shadowRoot.querySelector('.period-trigger').textContent.includes('24 uur')&&cards[3].shadowRoot.querySelector('.period-trigger').textContent.includes('168 uur'));
+  check('Default restores Overview live values',cards[4].shadowRoot.querySelector('.value').textContent.includes('999'));
+  check('Default restores Energy\'s native price window',cards[5]._sharedTimeframe===null&&!!cards[5]._chart);
+  for(const card of cards)check(card.localName+' keeps config',card._config.hours_to_show===(card===cards[3]?168:24));
+ }catch(error){window.qaSyncError=error.message;}
+ document.getElementById('result').textContent=results.map(r=>`${r.ok?'✓':'✗'} ${r.name}`).join('\n');
+};
+</script></body></html>

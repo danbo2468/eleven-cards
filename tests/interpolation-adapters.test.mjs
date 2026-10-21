@@ -1,3 +1,4 @@
+import * as periods from '../shared/periods.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -10,7 +11,7 @@ globalThis.HTMLElement=class{attachShadow(){return this.shadowRoot={innerHTML:''
 globalThis.customElements={get:()=>undefined,define:()=>{}};globalThis.window={};globalThis.document={querySelector:()=>null};
 const {HistoryGraphCard:History}=await import('../cards/history-graph-card/src/history-graph-card.js');
 let Energy;
-const context=vm.createContext({...graph,...utils,...localization,HTMLElement:globalThis.HTMLElement,window:{},document:globalThis.document,customElements:{get:()=>undefined,define:(_,c)=>Energy=c}});
+const context=vm.createContext({...periods,...graph,...utils,...localization,HTMLElement:globalThis.HTMLElement,window:{},document:globalThis.document,customElements:{get:()=>undefined,define:(_,c)=>Energy=c}});
 const source=readFileSync(new URL('../cards/dynamic-energy-price-card/src/dynamic-energy-price-card.js',import.meta.url),'utf8');
 vm.runInContext(source.replace(/^import\s*\{[\s\S]*?\}\s*from\s*['"][^'"]+['"];\s*/gm,''),context);
 const fields=s=>s.flatMap(f=>f.schema?fields(f.schema):[f]);

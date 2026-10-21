@@ -1,5 +1,9 @@
 // Dutch source strings are translation keys; no user-provided text is translated.
 export const ENGLISH = Object.freeze({
+ "Tijdvak synchroniseren":"Synchronize timeframe","Tijdvakgroep":"Timeframe group",
+ "Volgt het gekozen tijdvak van ingeschakelde kaarten in dezelfde groep. Alleen beschikbare bronprijzen worden getoond.":"Follows the selected timeframe of enabled cards in the same group. Only available source prices are shown.",
+ "Dezelfde sleutel koppelt kaarten op deze pagina. Leeg gebruikt de standaardgroep.":"The same key links cards on this page. Empty uses the default group.",
+ "De prijsbron bevat geen prijsintervallen voor het gekozen tijdvak.":"The price source has no price intervals for the selected timeframe.",
   "Prijsbron":"Price source",
   "Tibber-aansluiting":"Tibber connection",
   "Prijs-/templatesensor":"Price/template sensor",
@@ -71,9 +75,9 @@ export const ENGLISH = Object.freeze({
   "Titel tonen": "Show title",
   "Verticale hoverlijn": "Vertical hover line",
   "Hover synchroniseren": "Synchronize hover",
-  "Hover-synchronisatiegroep": "Hover synchronization group",
+  "Synchronisatiegroep": "Synchronization group",
   "Deelt het gekozen tijdstip met andere Eleven-grafieken op deze pagina.": "Shares the selected time with other Eleven graphs on this page.",
-  "Kaarten met dezelfde groep volgen elkaar. Leeg gebruikt de standaardgroep.": "Cards with the same group follow each other. Empty uses the default group.",
+  "Kaarten met dezelfde groep delen hover en tijdvak als de bijbehorende synchronisatie aanstaat. Leeg gebruikt de standaardgroep.": "Cards with the same group share hover and timeframe when the corresponding synchronization is enabled. Empty uses the default group.",
   "Gemiddelde prijslijn": "Average price line",
   "Gemiddelde prijs in tabel": "Average price in table",
   "Dag in tabel": "Day column in table",

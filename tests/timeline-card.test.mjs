@@ -1,5 +1,12 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import vm from 'node:vm';import {readFileSync} from 'node:fs';
 function load(){const registry=new Map(),window=new EventTarget();const context=vm.createContext({HTMLElement:class {attachShadow(){this.shadowRoot={innerHTML:'',querySelector:()=>null,querySelectorAll:()=>[]};}},window,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},setTimeout,clearTimeout,URLSearchParams,Date,Intl});const code=readFileSync(new URL('../cards/timeline-card/dist/eleven-timeline-card.js',import.meta.url),'utf8');vm.runInContext(code,context);vm.runInContext(code,context);return {Card:registry.get('eleven-timeline-card'),window};}
+test('unrelated Home Assistant updates do not rebuild the timeline',()=>{
+ const {Card}=load(),card=new Card();card.setConfig({entities:['switch.a']});let renders=0;card._render=()=>renders++;
+ card.hass={language:'en',states:{'switch.a':{state:'off',attributes:{friendly_name:'Switch'}}}};assert.equal(renders,1);
+ card.hass={language:'en',states:{'switch.a':{state:'off',attributes:{friendly_name:'Switch'}},'sensor.other':{state:'8'}}};assert.equal(renders,1);
+ card.hass={language:'en',states:{'switch.a':{state:'on',attributes:{friendly_name:'Switch'}}}};assert.equal(renders,2);
+ assert.equal(card._segmentAt([{start:0,end:10},{start:10,end:20}],15,20).start,10);
+});
 test('timeline defaults distinguish semantic states and device-class alarms without overriding rules',()=>{
  const {Card}=load(),card=new Card();card.setConfig({entities:['switch.a','binary_sensor.smoke','binary_sensor.door','person.a','lock.a','cover.a']});
  card._hass={states:{'binary_sensor.smoke':{attributes:{device_class:'smoke'}},'binary_sensor.door':{attributes:{device_class:'door'}}}};

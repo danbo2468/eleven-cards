@@ -110,57 +110,66 @@ export class BarChartCard extends HistoryGraphCard {
   const stacked=plot&&this._config.graph_mode==='stacked';
   const p=points[index],period=this._config.aggregation_period==='none'&&!stacked&&this._series[seriesIndex]?.source==='statistics'?'hour':this._config.aggregation_period;
   const [start,finish]=period==='none'?[p.t,points[index+1]?.t??end]:periodBounds(p.t,period,this._zone);
-  return {start:Math.max(this._start,start),end:Math.min(end,finish),duration:finish-start};
+  return {start:Math.max(this._start,start),end:Math.min(end,finish),duration:finish-start,...(period!=='none'?{center:(start+finish)/2}:{})};
  }
  _barLayout(){
   const source=this._plotSeries??this._series,visible=this._config.entities.map((_,i)=>i).filter(i=>this._isSeriesVisible(i));
   const key=JSON.stringify([this._viewStart,this._viewEnd,this._config.aggregation_period,this._zone,visible]);
   if(this._barLayoutSource===source&&this._barLayoutKey===key)return this._barLayoutCache;
-  const centers=new Set(),intervals=[];let duration=this._viewEnd-this._viewStart;
+  const centers=new Set(),intervals=[];let duration=Infinity;
   for(const index of visible){const points=source[index]?.points??[];
    for(let i=0;i<points.length;i++){
     const interval=this._barInterval(points,i,this._end,index,true),a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
     if(b<=a)continue;
-    duration=Math.min(duration,interval.duration);centers.add((a+b)/2);
+    duration=Math.min(duration,interval.duration);centers.add(interval.center??(a+b)/2);
     if(Number.isFinite(points[i].v))intervals.push({interval,index});
    }
   }
-  const positions=[...centers].sort((a,b)=>a-b);let band=duration;
+  const positions=[...centers].sort((a,b)=>a-b);let band=Number.isFinite(duration)?duration:this._viewEnd-this._viewStart;
   for(let i=1;i<positions.length;i++)band=Math.min(band,positions[i]-positions[i-1]);
-  // Reserve a whole band, including its outer padding, when fitting edge
-  // groups. Fitting only the painted span squeezes the inter-group gap away.
-  if(positions.length>1)band=Math.min(band,(positions[1]-this._viewStart)/1.5,(this._viewEnd-positions.at(-2))/1.5,(this._viewEnd-this._viewStart)/2);
+  // Fit the entire layout once. Clamping individual edge centers changes
+  // their distance to neighbours and makes a partial period squeeze all bars.
+  const period=this._config.aggregation_period;
+  const from=period==='none'?this._viewStart:periodBounds(this._viewStart,period,this._zone)[0];
+  const to=period==='none'?this._viewEnd:periodBounds(this._viewEnd-1,period,this._zone)[1];
+  const start=Math.min(from,positions.length?positions[0]-band/2:from),end=Math.max(to,positions.length?positions.at(-1)+band/2:to);
+  const scale=(this._viewEnd-this._viewStart)/(end-start);
   this._barLayoutSource=source;this._barLayoutKey=key;
-  return this._barLayoutCache={band,span:band*.76,visible,intervals};
+  return this._barLayoutCache={start,scale,band,span:band*.76,visible,intervals};
  }
  _barGeometry(interval,x,index){
-  const {band,span,visible}=this._barLayout(),grouped=this._config.graph_mode!=='stacked';
+  const {start,scale,span,visible}=this._barLayout(),grouped=this._config.graph_mode!=='stacked';
   const count=grouped?visible.length:1,slot=grouped?visible.indexOf(index):0;
   const a=Math.max(this._viewStart,interval.start),b=Math.min(this._viewEnd,interval.end);
-  const center=Math.max(this._viewStart+band/2,Math.min(this._viewEnd-band/2,(a+b)/2));
-  const left=center-span/2+slot*span/count;
-  return {left:x(left),right:x(left+span*.9/count)};
+  const center=this._viewStart+((interval.center??(a+b)/2)-start)*scale;
+  const left=center-span*scale/2+slot*span*scale/count;
+  return {left:x(left),right:x(left+span*scale*.9/count)};
  }
  _barAt(timestamp,index){
   const points=(this._plotSeries??this._series)[index].points;let low=0,high=points.length;
   while(low<high){const middle=(low+high)>>1;if(points[middle].t<=timestamp)low=middle+1;else high=middle;}
   return low?this._barInterval(points,low-1,this._end,index,true):null;
  }
+ _timeAtPlotPosition(ratio){const layout=this._barLayout();return layout.start+ratio*(this._viewEnd-this._viewStart)/layout.scale;}
  _pointerTime(timestamp){
   // An edge bar may be inset beyond its period. Hit-test the painted bars for
   // pointer/touch, while keyboard and synchronized hover keep semantic times.
   const layout=this._barLayout();
-  layout.hits??=layout.intervals.map(({interval,index})=>({...this._barGeometry(interval,t=>t,index),time:(Math.max(this._viewStart,interval.start)+Math.min(this._viewEnd,interval.end))/2}));
-  return layout.hits.find(b=>timestamp>=b.left&&timestamp<=b.right)?.time??timestamp;
+  layout.hits??=layout.intervals.map(({interval,index})=>({...this._barGeometry(interval,t=>t,index),time:(Math.max(this._viewStart,interval.start)+Math.min(this._viewEnd,interval.end))/2})).sort((a,b)=>a.left-b.left);
+  const position=this._viewStart+(timestamp-layout.start)*layout.scale;
+  let low=0,high=layout.hits.length;while(low<high){const mid=(low+high)>>1;if(layout.hits[mid].left<=position)low=mid+1;else high=mid;}
+  const hit=layout.hits[low-1];return hit&&position<=hit.right?hit.time:timestamp;
  }
  _line(points,end,x,y,index=0){
-  let path='';
+  let path='';const dense=new Map(),plotWidth=this.shadowRoot?.querySelector('.plot')?.clientWidth,minimum=plotWidth>0?1000/plotWidth:0;
   for(let i=0;i<points.length;i++){
    const p=points[i],interval=this._barInterval(points,i,Math.min(this._end,end),index,true);
    if(!Number.isFinite(p.v)||interval.end<=this._viewStart||interval.start>=this._viewEnd||interval.end<=interval.start)continue;
    const {left:l,right:r}=this._barGeometry(interval,x,index),base=this._config.graph_mode==='stacked'?(p.base??0):0;
-   path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
+   if(points.length>2000&&minimum&&r-l<minimum){const key=Math.round((l+r)/(2*minimum)),bucket=dense.get(key)??{};const side=p.v>=base?'positive':'negative';if(!bucket[side]||Math.abs(p.v-base)>Math.abs(bucket[side].value-bucket[side].base))bucket[side]={left:l,right:Math.min(1000,Math.max(r,l+minimum)),value:p.v,base};dense.set(key,bucket);}
+   else path+=`M ${l} ${y(base)} V ${y(p.v)} H ${r} V ${y(base)} Z `;
   }
+  for(const bucket of dense.values())for(const bar of [bucket.positive,bucket.negative])if(bar)path+=`M ${bar.left} ${y(bar.base)} V ${y(bar.value)} H ${bar.right} V ${y(bar.base)} Z `;
   return path.trim();
  }
  _hoverInterval(timestamp){
@@ -168,8 +177,13 @@ export class BarChartCard extends HistoryGraphCard {
   const t=Math.max(a,Math.min(b-1,timestamp)),period=this._config.aggregation_period;
   const bounds=period==='none'?[this._start,this._end]:periodBounds(t,period,this._zone);
   // Aggregated bars select one whole period; raw intervals retain their edges.
-  const edges=[Math.max(a,bounds[0]),Math.min(b,bounds[1]),...this._series.flatMap((s,i)=>this._isSeriesVisible(i)?s.points.map(p=>p.t).filter(x=>x>a&&x<b&&x>bounds[0]&&x<bounds[1]):[])].sort((x,y)=>x-y);
-  const end=edges.find(x=>x>t)??b,start=edges.filter(x=>x<=t).at(-1)??a;
+  let start=Math.max(a,bounds[0]),end=Math.min(b,bounds[1]);
+  for(let i=0;i<this._series.length;i++){
+   if(!this._isSeriesVisible(i))continue;const points=this._series[i].points;let low=0,high=points.length;
+   while(low<high){const mid=(low+high)>>1;if(points[mid].t<=t)low=mid+1;else high=mid;}
+   const before=points[low-1]?.t,after=points[low]?.t;
+   if(before>start&&before<end)start=before;if(after>t&&after<end&&after<bounds[1])end=after;
+  }
   return {start,end,labelTime:period==='none'?start:bounds[0]};
  }
  _barTime(timestamp){

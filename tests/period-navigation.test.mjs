@@ -159,7 +159,7 @@ for(const slug of ['history-graph-card','bar-chart','timeline-card']){
    assert.equal(card._status,'ready');assert.equal(requests.at(-1).start,now-D);
    for(const value of ['configured','1h','6h','12h','24h','48h','7d','14d','30d','90d','365d','today','week','month','quarter','year'])assert.match(card.shadowRoot.innerHTML,new RegExp(`data-period-option="${value}"`));
    assert.match(card.shadowRoot.innerHTML,/Standaard \(24 uur\)/);
-   assert.match(card.shadowRoot.innerHTML,/aria-haspopup="menu"/);
+  assert.match(card.shadowRoot.innerHTML,/aria-haspopup="dialog"/);
    card._viewport=[now-H,now];await card._setPeriod('month');
    assert.equal(card._viewport,null);assert.equal(card._start,Date.parse('2026-09-30T22:00:00Z'));assert.equal(card._end,now);
    await card._navigate(-1);assert.equal(card._start,Date.parse('2026-08-31T22:00:00Z'));assert.equal(card._end,Date.parse('2026-09-30T22:00:00Z'));

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tijdvakpopup — mobiel</title>
+<style>body{margin:20px;font:14px system-ui;background:#f4f5f6;color:#20252b}button{font:inherit;padding:8px;margin-bottom:12px}iframe{display:block;width:320px;height:640px;border:1px solid #88919b;box-sizing:content-box}output{display:block;white-space:pre-wrap;margin-top:12px}</style>
+<p>Synthetische gegevens, zelfstandig venster van 320 px.</p><button id="audit">Mobiele popup controleren</button><iframe src="timeframe-sync.html" title="Kaarten op een mobiel scherm"></iframe><output role="status"></output>
+<script>
+document.getElementById('audit').onclick=async()=>{
+ const frame=document.querySelector('iframe').contentWindow,wait=()=>new Promise(r=>setTimeout(r,50)),results=[];window.qaMobileResults=results;window.qaMobileError=null;
+ try{
+  for(const theme of ['light','dark']){
+   frame.document.body.classList.toggle('dark',theme==='dark');
+   frame.document.getElementById('custom-layout').click();
+   for(let i=0;i<100&&!frame.qaLayoutError&&(frame.qaLayoutResults?.length??0)<4;i++)await wait();
+   if(frame.qaLayoutError)throw Error(frame.qaLayoutError);
+   results.push(...frame.qaLayoutResults.map(r=>({...r,theme})));
+   if(!frame.qaLayoutResults.every(r=>r.ok&&r.viewport===320))throw Error('Mobile layout');
+  }
+ }catch(error){window.qaMobileError=error.stack;}
+ document.querySelector('output').textContent=JSON.stringify({results,error:window.qaMobileError},null,2);
+};
+</script></html>

@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm --prefix cards/dynamic-energy-price-card run build && npm --prefix cards/history-graph-card run build && node cards/timeline-card/scripts/build.mjs && node cards/overview-card/scripts/build.mjs && node cards/bar-chart/scripts/build.mjs && node scripts/build.mjs",
-    "test": "npm run build && node --test tests/*.test.mjs cards/overview-card/tests/*.test.mjs cards/bar-chart/tests/*.test.mjs && npm --prefix cards/dynamic-energy-price-card test && npm --prefix cards/history-graph-card test",
-    "check": "node --check dist/eleven-cards.js && node --check cards/dynamic-energy-price-card/dist/eleven-dynamic-energy-price-card.js && node --check cards/history-graph-card/dist/eleven-history-graph-card.js && node --check cards/timeline-card/dist/eleven-timeline-card.js && node --check cards/overview-card/dist/eleven-overview-card.js && node --check cards/bar-chart/dist/eleven-bar-chart.js"
+    "build": "npm --prefix cards/dynamic-energy-price-card run build && npm --prefix cards/history-graph-card run build && node cards/timeline-card/scripts/build.mjs && node cards/overview-card/scripts/build.mjs && node cards/bar-chart/scripts/build.mjs && node cards/heatmap-card/scripts/build.mjs && node cards/calendar-card/scripts/build.mjs && node scripts/build.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs cards/overview-card/tests/*.test.mjs cards/bar-chart/tests/*.test.mjs cards/heatmap-card/tests/*.test.mjs cards/calendar-card/tests/*.test.mjs && npm --prefix cards/dynamic-energy-price-card test && npm --prefix cards/history-graph-card test",
+    "check": "node --check dist/eleven-cards.js && node --check cards/dynamic-energy-price-card/dist/eleven-dynamic-energy-price-card.js && node --check cards/history-graph-card/dist/eleven-history-graph-card.js && node --check cards/timeline-card/dist/eleven-timeline-card.js && node --check cards/overview-card/dist/eleven-overview-card.js && node --check cards/bar-chart/dist/eleven-bar-chart.js && node --check cards/heatmap-card/dist/eleven-heatmap-card.js && node --check cards/calendar-card/dist/eleven-calendar-card.js"
   }
 }

@@ -1,4 +1,7 @@
-import {cardHeaderIcon,closeOtherCardPopups,bindCardPopupPosition} from './card-header.js';
+import {cardHeaderIcon,closeOtherCardPopups} from './card-header.js';
+import {uiButton} from './ui-button.js';
+import {uiPopup,bindUIPopup} from './ui-popup.js';
+import {bindUILegend,cancelUILegendClicks,focusUILegend} from './ui-legend.js';
 const insightEscape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function chartZoomState(host){
  const total=host._end-host._start,ready=host._status==='ready'&&Number.isFinite(total)&&total>0;
@@ -13,33 +16,20 @@ export function isolateChartSeries(host,id){
  host._visibility=new Map(host._config.entities.map(entity=>[entity,entity===id]));host._hideTooltip?.();host._render();
 }
 export function showAllChartSeries(host){host._visibility=new Map(host._config.entities.map(id=>[id,true]));host._hideTooltip?.();host._render();}
-function cancelChartLegendClicks(host){for(const timer of host._legendClickTimers?.values()??[])clearTimeout(timer);host._legendClickTimers?.clear();}
 export function toggleChartIsolation(host,id){
  if(!host._config.entities.includes(id))return;
- cancelChartLegendClicks(host);
+ cancelUILegendClicks(host);
  const only=host._config.entities.every((entity,i)=>host._isSeriesVisible(i)===(entity===id));
  only?showAllChartSeries(host):isolateChartSeries(host,id);
- queueMicrotask(()=>host.shadowRoot.querySelector(`[data-series="${id}"]`)?.focus({preventScroll:true}));
+ focusUILegend(host,id,'[data-series]',button=>button.dataset.series);
 }
 export function bindChartLegend(host){
  const nl=host._insightLanguage==='nl',hint=nl?'Dubbelklik of Shift+Enter: alleen deze sensor. Herhaal om alles te tonen.':'Double-click or Shift+Enter: show only this sensor. Repeat to show all.';
- for(const button of host.shadowRoot.querySelectorAll?.('[data-series]')??[]){
-  const id=button.dataset.series;
-  if(!button.title?.includes(hint))button.title=[button.title,hint].filter(Boolean).join(' ');button.setAttribute('aria-description',hint);button.setAttribute('aria-keyshortcuts','Shift+Enter Shift+Space');
-  button.onclick=e=>{
-   clearTimeout(host._legendClickTimers?.get(id));host._legendClickTimers?.delete(id);
-   if(e.shiftKey||e.detail>1){e.preventDefault();toggleChartIsolation(host,id);return;}
-   if(!e.detail){host._toggleSeries?host._toggleSeries(id):toggleChartIsolation(host,id);return;}
-   // Keep the target alive until a second click can arrive: rendering after
-   // the first click would replace it and break native double-click detection.
-   if(host._toggleSeries){const config=host._config;host._legendClickTimers??=new Map();host._legendClickTimers.set(id,setTimeout(()=>{host._legendClickTimers.delete(id);if(host._config===config)host._toggleSeries(id);},300));}
-  };
-  button.ondblclick=e=>e.preventDefault();
-  button.onkeydown=e=>{if(e.shiftKey&&['Enter',' '].includes(e.key)){e.preventDefault();e.stopPropagation();toggleChartIsolation(host,id);}};
- }
+ bindUILegend(host,{selector:'[data-series]',getId:button=>button.dataset.series,hint,toggle:host._toggleSeries?id=>host._toggleSeries(id):null,isolate:id=>toggleChartIsolation(host,id)});
 }
 function insightControl(host,key,label,body,icon=''){
- return `<div class="insight-control"><button type="button" class="insight-trigger" data-insight="${key}" title="${insightEscape(label)}" aria-label="${insightEscape(label)}" aria-haspopup="dialog" aria-expanded="${host._insightOpen===key}" aria-controls="insight-${key}">${icon}${key==='data'?'':`<span>${insightEscape(label)}</span>`}</button><div id="insight-${key}" class="insight-popup" data-insight-panel="${key}" popover="auto" role="dialog" aria-label="${insightEscape(label)}"><div class="chart-popup-heading"><strong>${insightEscape(label)}</strong><button type="button" data-insight-close aria-label="${host._insightLanguage==='nl'?'Sluiten':'Close'}">×</button></div>${body}</div></div>`;
+ const trigger=uiButton({className:'insight-trigger',content:icon+(key==='data'?'':`<span>${insightEscape(label)}</span>`),attrs:{'data-insight':key,title:label,'aria-label':label,'aria-haspopup':'dialog','aria-expanded':host._insightOpen===key,'aria-controls':'insight-'+key}});
+ return `<div class="insight-control">${trigger}${uiPopup({id:'insight-'+key,className:'insight-popup',attrs:{'data-insight-panel':key},title:label,closeLabel:host._insightLanguage==='nl'?'Sluiten':'Close',closeAttrs:{'data-insight-close':''},content:body})}</div>`;
 }
 // Work on unstacked, undecimated values. A history value holds until the next
 // point (null breaks coverage); bars have equal weight, regardless of bin length.
@@ -75,7 +65,8 @@ export function chartDataInformation(host,language='en'){
    const unit=row?.unit??host._hass?.states?.[item.id]?.attributes?.unit_of_measurement??'';
    const metrics=row?.durations?`<dl class="insight-durations">${row.durations.map(s=>`<div><dt title="${insightEscape(s.missing?(nl?'Geen geschiedenis':'No history'):s.state)}">${insightEscape(s.label)}</dt><dd>${insightEscape(host._duration(s.duration))}</dd></div>`).join('')}</dl>`:row?`<dl class="insight-metrics${'total' in row?' has-total':''}">${[['minimum','Min'],['maximum','Max'],['average',nl?'Gem.':'Avg.']].map(([key,label])=>`<div><dt${key==='average'?` title="${nl?'Gemiddeld':'Average'}"`:''}>${label}</dt><dd data-metric="${key}">${value(row[key])}</dd></div>`).join('')}${'total' in row?`<div><dt title="${nl?'Som van volledige staven':'Sum of whole bars'}">${nl?'Som':'Sum'}</dt><dd data-metric="total">${value(row.total)}</dd></div>`:''}</dl>`:'';
    const states=[host._inFlight?(nl?'Vernieuwen…':'Refreshing…'):host._loadFailed?(nl?'Verouderd':'Outdated'):'',hidden?(nl?'Verborgen':'Hidden'):'',row?.limited?(nl?'Meer dan 20 statussen':'More than 20 states'):row?.count===0||source?.empty?(nl?'Geen gegevens':'No data'):row?.missing?(nl?'Onvolledig':'Incomplete'):''].filter(Boolean);
-   return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
+   const color=host._insightColor?.(i,row)??'var(--primary-color,#2196f3)';
+   return `<section class="insight-sensor" data-information-entity="${insightEscape(item.id)}"><div class="insight-sensor-heading"><i class="insight-color" style="--insight-color:${insightEscape(color)}" aria-hidden="true"></i><strong>${insightEscape(item.name)}</strong><span class="insight-source">${sourceLabel}${unit?` <span class="insight-unit">· ${insightEscape(unit)}</span>`:''}</span></div>${metrics}${states.length?`<div class="insight-states" role="status">${states.join(' · ')}</div>`:''}</section>`;
   }).join('')}</div>`;
  }
  return insightControl(host,'data',nl?'Gegevens':'Data information',body,cardHeaderIcon('info'));
@@ -87,7 +78,7 @@ export function captureChartInsights(host){
  const popup=[...(host.shadowRoot.querySelectorAll?.('.insight-popup')??[])].find(panel=>typeof panel.showPopover==='function'?panel.matches(':popover-open'):panel.hasAttribute('data-fallback-open'));
  host._insightOpen=popup?.dataset.insightPanel??host._insightPending??null;
 }
-export function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelChartLegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
+export function disconnectChartInsights(host,keepLegendClicks=false){if(!keepLegendClicks){cancelUILegendClicks(host);host._insightPending=null;}host._insightCleanup?.();host._insightCleanup=null;}
 function restoreChartInsightFocus(host){
  if(!host._insightFocus||host._insightPending)return;
  const root=host.shadowRoot,{key,inside,entity,all}=host._insightFocus,popup=root.querySelector(`[data-insight-panel="${key}"]`),target=inside&&host._insightOpen===key?popup?.querySelector(entity?`[data-isolate="${entity}"]`:all?'[data-show-all]':'[data-insight-close]'):root.querySelector(`[data-insight="${key}"]`);
@@ -98,30 +89,18 @@ export function bindChartInsights(host){
  const root=host.shadowRoot,cleanups=[];host._insightCleanup=()=>cleanups.splice(0).forEach(remove=>remove());
  const listen=(target,event,handler,capture=false)=>{target?.addEventListener?.(event,handler,capture);cleanups.push(()=>target?.removeEventListener?.(event,handler,capture));};
  for(const control of root.querySelectorAll?.('.insight-control')??[]){
-  const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight,native=typeof popup.showPopover==='function';
-  const isOpen=()=>native?popup.matches(':popover-open'):popup.hasAttribute('data-fallback-open');
-  let focusPending=false;
-  const placement=bindCardPopupPosition(host,trigger,popup,()=>host._insightOpen===key,()=>{
-   host._insightPending=null;
-   if(native){if(!isOpen())popup.showPopover();}else popup.setAttribute('data-fallback-open','');
-   if(focusPending){popup.querySelector('[data-insight-close]')?.focus({preventScroll:true});focusPending=false;}
-   restoreChartInsightFocus(host);
-  }),position=placement.position;
-  cleanups.push(()=>placement.disconnect());
-  const close=(focus=false)=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;trigger.setAttribute('aria-expanded','false');if(native){if(isOpen())popup.hidePopover();}else popup.removeAttribute('data-fallback-open');if(focus)trigger.focus({preventScroll:true});};
-  const open=(focus=true)=>{closeOtherCardPopups(host,'insight');host._insightOpen=key;host._insightPending=key;focusPending=focus;trigger.setAttribute('aria-expanded','true');position();};
-  let pointerWasOpen;trigger.onpointerdown=()=>{pointerWasOpen=isOpen();};trigger.onpointercancel=()=>{pointerWasOpen=undefined;};
-  trigger.onclick=()=>{const wasOpen=pointerWasOpen??isOpen();pointerWasOpen=undefined;wasOpen?close(true):open();};
-  popup.querySelector('[data-insight-close]').onclick=()=>close(true);
-  popup.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);}};
-  popup.addEventListener('toggle',e=>{if(root.querySelector(`[data-insight-panel="${key}"]`)!==popup)return;trigger.setAttribute('aria-expanded',String(e.newState==='open'));if(e.newState==='closed'&&host._insightOpen===key)host._insightOpen=null;});
+  const trigger=control.querySelector('[data-insight]'),popup=control.querySelector('.insight-popup'),key=trigger.dataset.insight;
+  const controller=bindUIPopup({trigger,popup,container:control,ready:root.querySelector('ha-card')?.updateComplete,
+   isRequested:()=>host._insightOpen===key,isCurrent:()=>root.querySelector(`[data-insight-panel="${key}"]`)===popup,
+   beforeOpen:()=>closeOtherCardPopups(host,'insight'),
+   onOpen:()=>{host._insightOpen=key;host._insightPending=key;},
+   onClose:()=>{if(host._insightOpen===key)host._insightOpen=null;host._insightPending=null;},
+   onToggle:open=>{if(!open&&host._insightOpen===key)host._insightOpen=null;},
+   onShown:()=>{host._insightPending=null;restoreChartInsightFocus(host);},closeWhenAnchorHidden:true
+  });
+  const {open,close}=controller;cleanups.push(()=>controller.disconnect());
   for(const button of popup.querySelectorAll('[data-isolate]'))button.onclick=()=>{close(true);isolateChartSeries(host,button.dataset.isolate);};
   const all=popup.querySelector('[data-show-all]');if(all)all.onclick=()=>{close(true);showAllChartSeries(host);};
-  listen(window,'resize',()=>{if(isOpen()){if(trigger.getClientRects().length)position();else close();}});
-  listen(window,'scroll',e=>{if(isOpen()&&!e.composedPath().includes(popup))close();},true);
-  // Restored focus has a capture listener that may already clear restore state.
-  // A fallback popup still needs dismissal based on its actual visible state.
-  listen(document,'pointerdown',e=>{if((!native||host._insightPending===key)&&(isOpen()||host._insightOpen===key)&&!e.composedPath().includes(control))close();});
   if(host._insightOpen===key)open(false);
  }
  restoreChartInsightFocus(host);
@@ -134,19 +113,11 @@ export function chartInsightStyles(){return `
 .chart-range .period-panel{margin:0}
 .zoom-status{font-size:11px;color:var(--primary-text-color,#20252b);background:var(--secondary-background-color,#eee);border-radius:4px;padding:2px 6px;white-space:nowrap}
 .insight-control{display:inline-flex;flex:none}
-.insight-trigger{font:inherit;font-size:11px;min-height:28px;padding:3px 7px;display:flex;align-items:center;gap:5px;border:0;border-radius:5px;background:transparent;color:var(--primary-text-color,#20252b);cursor:pointer}
 .insight-trigger svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.insight-trigger:hover{background:var(--secondary-background-color,#eee)}
-.header-actions .insight-trigger{width:32px;height:32px;padding:0;background:var(--secondary-background-color,#eee);border-radius:5px}
+.header-actions .insight-trigger{width:32px;height:32px;padding:0;background:transparent;border-radius:4px}
 .header-actions .insight-trigger:hover{background:color-mix(in srgb,var(--primary-text-color,#20252b) 12%,var(--ha-card-background,var(--card-background-color,#fff)))}
 .header-actions .insight-trigger svg{width:18px;height:18px;stroke-width:2}
-.insight-trigger:focus-visible,.insight-popup button:focus-visible{outline:2px solid var(--primary-color,#2196f3);outline-offset:-2px}
 .insight-popup{z-index:21}
-.insight-popup:popover-open{display:block}
-.insight-popup[data-fallback-open]{display:block}
-.insight-popup button{display:block;box-sizing:border-box;width:auto;height:auto;padding:0;font:inherit;cursor:pointer;color:inherit;background:transparent;border:0;border-radius:5px;min-height:30px}
-.insight-popup button:disabled{opacity:.4;cursor:default}
-.insight-popup button:hover{background:var(--secondary-background-color,#eee)}
 .insight-popup p{margin:8px 0 12px;color:var(--secondary-text-color,#666);overflow-wrap:anywhere}
 .insight-popup p strong{color:var(--primary-text-color,#20252b);font-weight:500}
 .insight-popup .insight-choice{display:block;width:100%;padding:6px 8px;text-align:start;overflow-wrap:anywhere}
@@ -154,7 +125,8 @@ export function chartInsightStyles(){return `
 .insight-sensors{display:grid}
 .insight-sensor{min-width:0;padding:8px 0}
 .insight-sensor+.insight-sensor{border-top:1px solid var(--divider-color,#ddd)}
-.insight-sensor-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px}
+.insight-sensor-heading{display:flex;align-items:center;flex-wrap:wrap;gap:2px 8px}
+.insight-color{display:block;width:7px;height:7px;flex:none;border-radius:2px;background:var(--insight-color,var(--primary-color,#2196f3))}
 .insight-sensor-heading>strong{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
 .insight-source{font-size:10px;font-weight:400;color:var(--secondary-text-color,#666);color:color-mix(in srgb,var(--secondary-text-color,#666) 90%,var(--ha-card-background,var(--card-background-color,#fff)));flex:none}
 .insight-unit{white-space:nowrap}

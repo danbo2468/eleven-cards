@@ -30,8 +30,8 @@ test('grouped geometry gives each sensor its own slot and unavailable intervals 
  c._visibility.set('sensor.b',false);assert.match(c._line(points,10800000,x,y,0),/^M 120 300 V 290 H 804/);
 });
 test('stacked bars use separate positive and negative bases, not grouped slots',()=>{
- const c=fixture({graph_mode:'stacked'});c._viewStart=0;c._viewEnd=100;
- const d=c._line([{t:0,v:-15,base:-10}],100,t=>t,v=>300-v,1);
+ const c=fixture({graph_mode:'stacked'});c._viewStart=0;c._viewEnd=3600000;
+ const d=c._line([{t:0,v:-15,base:-10}],3600000,t=>t/36000,v=>300-v,1);
  assert.match(d,/^M 12 310 V 315 H 80.4 V 310 Z$/);
  assert.ok(c._plotSeries[1].points.some(p=>p.base===10));
 });

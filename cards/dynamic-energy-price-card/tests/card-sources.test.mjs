@@ -1,3 +1,4 @@
+import * as periods from '../../../shared/periods.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -7,7 +8,7 @@ import * as graph from '../../../shared/graph.js';
 import * as localization from '../src/localization.js';
 let Card;const timers=new Map();let timerId=0;
 vm.runInNewContext(readFileSync(new URL('../src/dynamic-energy-price-card.js',import.meta.url),'utf8').replace(/^import\s*\{[\s\S]*?\}\s*from\s*['"][^'"]+['"];\s*/gm,''),{
- ...graph,...utils,...localization,Date,Intl,URLSearchParams,console,
+ ...periods,...graph,...utils,...localization,Date,Intl,URLSearchParams,console,
  setTimeout:(fn,delay)=>{const id=++timerId;timers.set(id,{fn,delay});return id;},clearTimeout:id=>timers.delete(id),
  HTMLElement:class{attachShadow(){this.shadowRoot={querySelector:()=>null,querySelectorAll:()=>[]};}},
  customElements:{get:()=>undefined,define:(n,c)=>{if(n==='eleven-dynamic-energy-price-card')Card=c;}},window:{addEventListener(){},removeEventListener(){}}
@@ -23,6 +24,14 @@ test('new cards have no preselected entity and render a localized source prompt'
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const base=()=>{const c=new Card();c._render=()=>{};return c;};
 const reply={response:{success:true,price_info:[{startsAt:'2026-10-15T00:00:00+02:00',total:-.0123}]}};
+test('a stalled Tibber request times out and can be retried',async()=>{
+ const c=base();c.setConfig({import_source:'tibber_prices'});let calls=0;
+ c._hass={config:{time_zone:'UTC'},states:{},callWS:()=>{calls++;return new Promise(()=>{});}};
+ c._ensureTibber('import');const timer=[...timers.values()].find(item=>item.delay===15000);assert.ok(timer);
+ timer.fn();await tick();assert.equal(c._tibberCache.get(c._tibberKey('import')).status,'error');
+ c._tibberCache.get(c._tibberKey('import')).fetchedAt-=60001;c._ensureTibber('import');assert.equal(calls,2);
+ c.disconnectedCallback();
+});
 test('Tibber source calls read-only get_price in EUR with no sensor and caches/deduplicates identical entries',async()=>{
  const c=base();c.setConfig({import_source:'tibber_prices',export_source:'tibber_prices',graph_mode:'both',import_tibber_entry:'entry-one',export_tibber_entry:'entry-one'});
  let calls=0;let message;
