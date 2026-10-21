@@ -48,6 +48,19 @@ test('pending history cannot restore an overlay after source disappears',async()
  c._ensureConsumption(base,base+3600000,15);delete c._hass.states['sensor.energy'];
  c._ensureConsumption(base,base+3600000,15);resolve([history]);await tick();assert.equal(c._consumption.status,'source');
 });
+test('a short synchronized window keeps the original price cadence and skips inverted consumption history',()=>{
+ const prices=Array.from({length:48},(_,i)=>({start_time:new Date(base+i*900000).toISOString(),price_per_kwh:.2}));
+ const card=make({sync_timeframe:true,show_consumption:true,consumption_entity:'sensor.energy',export_entity:'sensor.export',graph_mode:'both'});
+ let historyCalls=0;
+ card._hass={language:'en',config:{time_zone:'Europe/Amsterdam'},states:{'sensor.price':{attributes:{data:prices}},'sensor.export':{attributes:{data:prices}},'sensor.energy':energy},callApi:()=>{historyCalls++;return Promise.resolve([]);}};
+ const start=base+10*3600000+20*60000,end=start+5*60000;
+ card._sharedTimeframe={group:'default',offset:1,end,range:{start,end}};
+ card._render();
+ assert.equal(card._chart.intervalMs,900000);
+ assert.equal(card._chart.timeline.length,1);
+ assert.equal(card._consumption.status,'empty');
+ assert.equal(historyCalls,0);
+});
 test('render adds independent kWh scale and measured line in every tariff mode while optional-off preserves geometry',()=>{
  const c=make({show_consumption:true,consumption_entity:'sensor.energy',export_entity:'sensor.export'});
  const prices=Array.from({length:96},(_,i)=>({start_time:new Date(base+i*900000).toISOString(),price_per_kwh:.1+i*.002}));

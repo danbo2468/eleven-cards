@@ -1749,6 +1749,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   _ensureConsumption(start, end, intervalMinutes) {
     if (this._config.show_consumption !== true) return;
+    if (!(end > start)) {
+      this._resetConsumption();
+      this._consumption = { status: 'empty', points: [], intervalMinutes };
+      return;
+    }
     const entity = this._config.consumption_entity;
     const state = this._hass?.states?.[entity];
     if (!entity || !state) {
@@ -1855,11 +1860,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const rawImportData = importState.attributes?.data;
     const sharedRange=this._sharedTimeframe?graphPeriodRange(this):null;
     const visible=data=>{
-      if(!sharedRange)return getVisiblePoints(data,now,timeZone,this._config.tomorrow_after);
-      const points=normalizePoints(data,timeZone),interval=inferIntervalMinutes(points)*60000;
-      return points.filter(p=>p.timestamp<sharedRange.end&&p.timestamp+interval>sharedRange.start);
+      const points=sharedRange?normalizePoints(data,timeZone):getVisiblePoints(data,now,timeZone,this._config.tomorrow_after);
+      const intervalMinutes=inferIntervalMinutes(points);
+      return {points:sharedRange?points.filter(p=>p.timestamp<sharedRange.end&&p.timestamp+intervalMinutes*60000>sharedRange.start):points,intervalMinutes};
     };
-    const importPoints = visible(rawImportData);
+    const {points:importPoints,intervalMinutes}=visible(rawImportData);
     if (!importPoints.length) {
       this.shadowRoot.innerHTML = this._stateCard(
         this._t("Nog geen prijsgegevens"),
@@ -1876,9 +1881,9 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const rawExportData = exportState
       ? offsetPriceData(exportState.attributes?.data, exportOffset)
       : null;
-    const exportPoints = rawExportData
+    const {points:exportPoints,intervalMinutes:exportIntervalMinutes}=rawExportData
       ? visible(rawExportData)
-      : [];
+      : {points:[],intervalMinutes:intervalMinutes};
     const timeline = mergePriceSeries(importPoints, exportPoints);
     const graphIncludesImport = IMPORT_MODES.has(this._config.graph_mode);
     const graphIncludesExport = EXPORT_MODES.has(this._config.graph_mode);
@@ -1910,8 +1915,6 @@ class DynamicEnergyPriceCard extends HTMLElement {
       }
     }
 
-    const intervalMinutes = inferIntervalMinutes(importPoints);
-    const exportIntervalMinutes = inferIntervalMinutes(exportPoints);
     const intervalMs = intervalMinutes * 60000;
     const cheapPrice = Number(this._config.cheap_price);
     const normalPrice = Number(this._config.normal_price);
@@ -5311,7 +5314,7 @@ const TimelineView={
  },
  _receiveHover(t){if(t===null||!Number.isFinite(t)||t<this._viewStart||t>this._viewEnd){this._hideTooltip(false);return;}this._showTooltip(t,false);},
  _segmentAt(segments,t,end){let low=0,high=segments.length;while(low<high){const mid=(low+high)>>1;if(segments[mid].start<=t)low=mid+1;else high=mid;}const segment=segments[low-1];return segment&&(t<segment.end||(t===end&&segment.end===end))?segment:null;},
- _hideTooltip(publish=true){if(publish)SharedGraph.clearHover(this);this._pointerFocusPending=null;this._cursor=null;this._pinned=false;for(const cls of ['tooltip','guide']){const el=this.shadowRoot.querySelector('.'+cls);if(el)el.hidden=true;}},
+ _hideTooltip(publish=true){if(this._hoverFrame!=null)globalThis.cancelAnimationFrame?.(this._hoverFrame);this._hoverFrame=null;this._hoverTime=null;if(publish)SharedGraph.clearHover(this);this._pointerFocusPending=null;this._cursor=null;this._pinned=false;for(const cls of ['tooltip','guide']){const el=this.shadowRoot.querySelector('.'+cls);if(el)el.hidden=true;}},
  _showTooltip(t,publish=true){
   if(!SharedGraph.tooltipInView(this)){this._hideTooltip(publish);return;}
   const chart=this.shadowRoot.querySelector('.chart'),tooltip=chart?.querySelector('.tooltip'),guide=chart?.querySelector('.guide');if(!tooltip)return;
@@ -5327,7 +5330,7 @@ const TimelineView={
   const chart=this.shadowRoot.querySelector('.chart');if(!chart)return;
   const timestamp=e=>{const r=chart.getBoundingClientRect();return this._viewStart+Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*(this._viewEnd-this._viewStart);};
   let drag=null;const selection=chart.querySelector('.zoom-selection');
-  chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){this._hideTooltip();const r=chart.getBoundingClientRect(),x=Math.max(r.left,Math.min(r.right,e.clientX));selection.hidden=false;selection.style.left=`${(Math.min(drag.x,x)-r.left)/r.width*100}%`;selection.style.width=`${Math.abs(x-drag.x)/r.width*100}%`;}else if(!this._pinned&&e.pointerType!=='touch'){this._hoverTime=timestamp(e);if(this._hoverFrame==null){if(typeof requestAnimationFrame==='function')this._hoverFrame=requestAnimationFrame(()=>{this._hoverFrame=null;if(this.shadowRoot.querySelector('.chart')===chart&&!this._pinned)this._showTooltip(this._hoverTime);});else this._showTooltip(this._hoverTime);}}};
+  chart.onpointermove=e=>{if(drag&&Math.abs(e.clientX-drag.x)>=6){this._hideTooltip();const r=chart.getBoundingClientRect(),x=Math.max(r.left,Math.min(r.right,e.clientX));selection.hidden=false;selection.style.left=`${(Math.min(drag.x,x)-r.left)/r.width*100}%`;selection.style.width=`${Math.abs(x-drag.x)/r.width*100}%`;}else if(!this._pinned&&e.pointerType!=='touch'){this._hoverTime=timestamp(e);if(this._hoverFrame==null){if(typeof requestAnimationFrame==='function')this._hoverFrame=requestAnimationFrame(()=>{this._hoverFrame=null;if(this.shadowRoot.querySelector('.chart')===chart&&!this._pinned&&this._hoverTime!=null)this._showTooltip(this._hoverTime);});else this._showTooltip(this._hoverTime);}}};
   chart.onpointerdown=e=>{if(e.target?.closest?.('[data-series],.tooltip')||(e.button??0)!==0)return;this._pointerFocusPending=e.target?.closest?.('.segment')??null;this._pinned=true;this._showTooltip(timestamp(e));if(e.pointerType==='mouse'){drag={x:e.clientX,t:timestamp(e)};chart.setPointerCapture?.(e.pointerId);}};
   chart.onpointerup=e=>{selection.hidden=true;if(drag){const d=drag;drag=null;if(Math.abs(e.clientX-d.x)>=6){const t=timestamp(e),a=Math.min(d.t,t),b=Math.max(d.t,t);if(b-a>=60000){this._hideTooltip();this._viewport=[a,b];this._render();}}}};
   chart.onpointercancel=()=>{drag=null;selection.hidden=true;this._hideTooltip();};chart.onlostpointercapture=()=>{drag=null;selection.hidden=true;};chart.onpointerleave=()=>{if(!this._pinned&&!drag)this._hideTooltip();};
@@ -8747,7 +8750,7 @@ async function loadHeatmapData(hass, config, start, end) {
     if(config.mode==='consumption' && error.message!=='statistics_unavailable')throw Error('statistics_load_failed');
   }
   if (config.mode === 'consumption') throw Error('consumption_statistics_required');
-  const url = `history/period/${new Date(start).toISOString()}?filter_entity_id=${encodeURIComponent(id)}&end_time=${encodeURIComponent(new Date(end).toISOString())}`;
+  const url = `history/period/${new Date(start).toISOString()}?filter_entity_id=${encodeURIComponent(id)}&end_time=${encodeURIComponent(new Date(end).toISOString())}&significant_changes_only=0`;
   const response = await hass.callApi('GET', url);
   if (!Array.isArray(response) || response.some(rows => !Array.isArray(rows))) throw Error('history_unavailable');
   const rows = (response.find(rows => rows[0]?.entity_id === id) ?? []).map(row => ({t:Date.parse(row.last_updated ?? row.last_changed), value:(row.attributes?.unit_of_measurement ?? '') === unit ? numeric(row.state) : null}))
@@ -9589,7 +9592,7 @@ function cardHeaderStyles(){return uiButtonStyles()+uiPopupStyles()+`
 
 
 const CALENDAR_COLORS=['#82adf5','#e7af67','#8ac6a6','#b99cf0','#eb8d9f','#80c6d6','#d8bd68','#a5b7d3'];
-const escapeCalendarHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const escapeCalendarHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function calendarRgb(value){
  if(Array.isArray(value))return [...value];
  if(typeof value!=='string'||!/^#[\da-f]{3}(?:[\da-f]{3})?$/i.test(value))return null;
@@ -9745,7 +9748,7 @@ ha-card{display:block;height:100%;min-width:0;min-height:0;color:var(--primary-t
 .popup-date-range{display:grid;gap:2px}.popup-date-range .popup-date-separator{color:var(--secondary-text-color,#666)}
 .popup-time{margin-top:3px;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}.popup-field{padding:10px 0 0;margin-top:10px;border-top:1px solid var(--divider-color,#ddd)}
 .popup-field-label{display:block;margin-bottom:3px;color:var(--secondary-text-color,#666);font-size:10px}.popup-location,.popup-description{font-size:12px;overflow-wrap:anywhere}.popup-description{white-space:pre-wrap}
-.popup-more{list-style:none;padding:0;margin:9px 0}.popup-more li{padding:5px 0;border-top:1px solid var(--divider-color,#ddd);font-size:11px}.popup-more small{display:block;color:var(--secondary-text-color,#666)}
+.popup-more{list-style:none;padding:0;margin:9px 0}.popup-more li{padding:5px 0;border-top:1px solid var(--divider-color,#ddd);font-size:11px}.popup-more summary{cursor:pointer}.popup-more small{display:block;color:var(--secondary-text-color,#666)}.popup-more-detail{padding:8px 0 10px 12px}
 .calendar-info .insight-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 8px}
 .calendar-info .calendar-agenda-metrics{grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px 12px;margin:6px 0 0}
 .calendar-info .insight-metrics>div{min-width:0}.calendar-info dt{font-size:10px;color:var(--secondary-text-color,#666)}.calendar-info dd{margin:2px 0 0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
@@ -9837,7 +9840,7 @@ class CalendarCard extends HTMLElement{
  static getStubConfig(hass){const entity=Object.keys(hass?.states??{}).find(id=>id.startsWith('calendar.'));return {entities:entity?[{entity,color:calendarRgb(CALENDAR_COLORS[0])}]:[],days_to_show:5,view:'list'};}
  setConfig(input){
   const empty=!input?.entities?.length&&!input?.calendars?.length;
-  const config=normalizeCalendarConfig(input,{draft:empty}),previous=this._config;
+  const config=normalizeCalendarConfig(input,{draft:empty}),previous=this._config,wasEmpty=this._emptyConfig;
   if(!empty)normalizeCalendarConfig(input);
   this._cancelLegendClicks();
   this._config=config;this._emptyConfig=empty;
@@ -9848,7 +9851,7 @@ class CalendarCard extends HTMLElement{
   if(this._connected&&this._hass){
    if(empty){this._stopCalendars();this._stopWeather();}
    else{if(priorIds!==nextIds||previous?.days_to_show!==config.days_to_show||previous?.view!==config.view)this._startCalendars();
-    if(previous?.weather_entity!==config.weather_entity)this._startWeather();}
+    if(wasEmpty||previous?.weather_entity!==config.weather_entity)this._startWeather();}
   }
   this._render();
  }
@@ -10002,7 +10005,7 @@ class CalendarCard extends HTMLElement{
    const outside=day.key.slice(0,7)!==range.monthKey.slice(0,7),visible=day.events.slice(0,this._config.density==='compact'?2:3),remaining=day.events.length-visible.length;
    let more='';
    if(remaining){const id=`calendar-more-${this._popupSeq++}`,title=this._dayFormatter({weekday:'long',day:'numeric',month:'long'}).format(Date.parse(`${day.key}T12:00:00Z`));
-    this._popupMarkup.push(uiPopup({id,title,closeLabel:label('close',dutch),content:`<ul class="popup-more">${day.events.map(event=>`<li data-calendar-event="${escapeCalendarHtml(calendarEventKey(event))}" style="--event-color:${this._eventColor(event.calendar)}"><strong>${escapeCalendarHtml(event.summary||label('title',dutch))}</strong><small>${escapeCalendarHtml(this._eventTime(event,day))} · ${escapeCalendarHtml(this._calendarName(event.calendar))}</small></li>`).join('')}</ul>`}));
+    this._popupMarkup.push(uiPopup({id,title,closeLabel:label('close',dutch),content:`<ul class="popup-more">${day.events.map(event=>`<li data-calendar-event="${escapeCalendarHtml(calendarEventKey(event))}" style="--event-color:${this._eventColor(event.calendar)}"><details><summary><strong>${escapeCalendarHtml(event.summary||label('title',dutch))}</strong><small>${escapeCalendarHtml(this._eventTime(event,day))} · ${escapeCalendarHtml(this._calendarName(event.calendar))}</small></summary><div class="popup-more-detail"><div class="popup-when">${this._detailTime(event)}</div>${event.location?`<div class="popup-field"><span class="popup-field-label">${label('location',dutch)}</span><div class="popup-location">${escapeCalendarHtml(event.location)}</div></div>`:''}${event.description?`<div class="popup-field"><span class="popup-field-label">${label('description',dutch)}</span><div class="popup-description">${escapeCalendarHtml(event.description)}</div></div>`:''}</div></details></li>`).join('')}</ul>`}));
     more=uiButton({variant:'text',className:'month-more',text:`+${remaining} ${label('more',dutch)}`,label:`+${remaining} ${label('more',dutch)}`,attrs:{'data-event-popup-id':id,'aria-controls':id,'aria-haspopup':'dialog'}});
    }
    return `<section class="month-cell ${outside?'outside':''} ${day.key===this._todayKey?'today':''}" aria-label="${escapeCalendarHtml(this._dayFormatter({weekday:'long',day:'numeric',month:'long'}).format(Date.parse(`${day.key}T12:00:00Z`)))}"><div class="month-cell-head"><time datetime="${day.key}">${Number(day.key.slice(8))}</time>${this._weatherFor(day.key,forecast)}</div>${visible.map(event=>this._eventButton(event,day,'month')).join('')}${more}</section>`;

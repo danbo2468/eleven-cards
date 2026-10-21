@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeCalendarConfig,calendarDisplayRange,calendarDaysWithEvents,forecastByCalendarDay,localCalendarDayKey,nextCalendarEvent} from '../src/calendar-utils.js';
+import {normalizeCalendarConfig,calendarDisplayRange,calendarDaysWithEvents,forecastByCalendarDay,localCalendarDayKey,nextCalendarEvent,escapeCalendarHtml} from '../src/calendar-utils.js';
+
+test('event text escapes apostrophes and markup without changing the text',()=>{
+ assert.equal(escapeCalendarHtml("O'Connor & <team>"),'O&#39;Connor &amp; &lt;team&gt;');
+});
 
 test('calendar configuration accepts entity rows, RGB colors and a weather entity',()=>{
  const config=normalizeCalendarConfig({entities:[{entity:'calendar.family',name:'Family',color:[31,114,201]},'calendar.work'],weather_entity:'weather.home',days_to_show:7,view:'month'});

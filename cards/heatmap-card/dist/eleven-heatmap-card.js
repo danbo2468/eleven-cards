@@ -912,7 +912,7 @@ async function loadHeatmapData(hass, config, start, end) {
     if(config.mode==='consumption' && error.message!=='statistics_unavailable')throw Error('statistics_load_failed');
   }
   if (config.mode === 'consumption') throw Error('consumption_statistics_required');
-  const url = `history/period/${new Date(start).toISOString()}?filter_entity_id=${encodeURIComponent(id)}&end_time=${encodeURIComponent(new Date(end).toISOString())}`;
+  const url = `history/period/${new Date(start).toISOString()}?filter_entity_id=${encodeURIComponent(id)}&end_time=${encodeURIComponent(new Date(end).toISOString())}&significant_changes_only=0`;
   const response = await hass.callApi('GET', url);
   if (!Array.isArray(response) || response.some(rows => !Array.isArray(rows))) throw Error('history_unavailable');
   const rows = (response.find(rows => rows[0]?.entity_id === id) ?? []).map(row => ({t:Date.parse(row.last_updated ?? row.last_changed), value:(row.attributes?.unit_of_measurement ?? '') === unit ? numeric(row.state) : null}))

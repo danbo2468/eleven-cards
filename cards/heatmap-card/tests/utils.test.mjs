@@ -190,3 +190,17 @@ test('average falls back to raw history with a held baseline and unit/unavailabl
   assert.equal(result.source,'history');assert.equal(result.intervals[0].start,epoch);
   assert.deepEqual(result.intervals.map(r=>r.value),[10,null,null]);
 });
+
+test('history fallback preserves a unit-only change when requesting all state changes',async()=>{
+  let requestedUrl;
+  const hass={states:{'sensor.a':{attributes:{unit_of_measurement:'W'}}},callWS:async()=>{throw Error('offline');},callApi:async(_method,url)=>{
+    requestedUrl=url;
+    return [[
+      {entity_id:'sensor.a',last_updated:new Date(epoch-hour).toISOString(),state:'10',attributes:{unit_of_measurement:'W'}},
+      {entity_id:'sensor.a',last_updated:new Date(epoch+hour).toISOString(),state:'10',attributes:{unit_of_measurement:'kW'}},
+    ]];
+  }};
+  const result=await loadHeatmapData(hass,{entity:'sensor.a',mode:'average'},epoch,epoch+2*hour);
+  assert.match(requestedUrl,/significant_changes_only=0/);
+  assert.deepEqual(result.intervals.map(row=>row.value),[10,null]);
+});

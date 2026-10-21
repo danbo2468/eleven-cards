@@ -1748,6 +1748,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
 
   _ensureConsumption(start, end, intervalMinutes) {
     if (this._config.show_consumption !== true) return;
+    if (!(end > start)) {
+      this._resetConsumption();
+      this._consumption = { status: 'empty', points: [], intervalMinutes };
+      return;
+    }
     const entity = this._config.consumption_entity;
     const state = this._hass?.states?.[entity];
     if (!entity || !state) {
@@ -1854,11 +1859,11 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const rawImportData = importState.attributes?.data;
     const sharedRange=this._sharedTimeframe?graphPeriodRange(this):null;
     const visible=data=>{
-      if(!sharedRange)return getVisiblePoints(data,now,timeZone,this._config.tomorrow_after);
-      const points=normalizePoints(data,timeZone),interval=inferIntervalMinutes(points)*60000;
-      return points.filter(p=>p.timestamp<sharedRange.end&&p.timestamp+interval>sharedRange.start);
+      const points=sharedRange?normalizePoints(data,timeZone):getVisiblePoints(data,now,timeZone,this._config.tomorrow_after);
+      const intervalMinutes=inferIntervalMinutes(points);
+      return {points:sharedRange?points.filter(p=>p.timestamp<sharedRange.end&&p.timestamp+intervalMinutes*60000>sharedRange.start):points,intervalMinutes};
     };
-    const importPoints = visible(rawImportData);
+    const {points:importPoints,intervalMinutes}=visible(rawImportData);
     if (!importPoints.length) {
       this.shadowRoot.innerHTML = this._stateCard(
         this._t("Nog geen prijsgegevens"),
@@ -1875,9 +1880,9 @@ class DynamicEnergyPriceCard extends HTMLElement {
     const rawExportData = exportState
       ? offsetPriceData(exportState.attributes?.data, exportOffset)
       : null;
-    const exportPoints = rawExportData
+    const {points:exportPoints,intervalMinutes:exportIntervalMinutes}=rawExportData
       ? visible(rawExportData)
-      : [];
+      : {points:[],intervalMinutes:intervalMinutes};
     const timeline = mergePriceSeries(importPoints, exportPoints);
     const graphIncludesImport = IMPORT_MODES.has(this._config.graph_mode);
     const graphIncludesExport = EXPORT_MODES.has(this._config.graph_mode);
@@ -1909,8 +1914,6 @@ class DynamicEnergyPriceCard extends HTMLElement {
       }
     }
 
-    const intervalMinutes = inferIntervalMinutes(importPoints);
-    const exportIntervalMinutes = inferIntervalMinutes(exportPoints);
     const intervalMs = intervalMinutes * 60000;
     const cheapPrice = Number(this._config.cheap_price);
     const normalPrice = Number(this._config.normal_price);

@@ -1,5 +1,16 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import vm from 'node:vm';import {readFileSync} from 'node:fs';
-function load(){const registry=new Map(),window=new EventTarget();const context=vm.createContext({HTMLElement:class {attachShadow(){this.shadowRoot={innerHTML:'',querySelector:()=>null,querySelectorAll:()=>[]};}},window,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},setTimeout,clearTimeout,URLSearchParams,Date,Intl});const code=readFileSync(new URL('../cards/timeline-card/dist/eleven-timeline-card.js',import.meta.url),'utf8');vm.runInContext(code,context);vm.runInContext(code,context);return {Card:registry.get('eleven-timeline-card'),window};}
+function load(globals={}){const registry=new Map(),window=new EventTarget();const context=vm.createContext({HTMLElement:class {attachShadow(){this.shadowRoot={innerHTML:'',querySelector:()=>null,querySelectorAll:()=>[]};}},window,customElements:{get:n=>registry.get(n),define:(n,c)=>registry.set(n,c)},setTimeout,clearTimeout,URLSearchParams,Date,Intl,...globals});const code=readFileSync(new URL('../cards/timeline-card/dist/eleven-timeline-card.js',import.meta.url),'utf8');vm.runInContext(code,context);vm.runInContext(code,context);return {Card:registry.get('eleven-timeline-card'),window};}
+test('leaving the chart cancels a queued hover update',()=>{
+ const pending=new Map(),shown=[];let nextId=0,queued;
+ const {Card}=load({requestAnimationFrame:callback=>{queued=callback;pending.set(++nextId,callback);return nextId;},cancelAnimationFrame:id=>pending.delete(id)});
+ const card=new Card();card.setConfig({entities:['switch.a']});card._viewStart=0;card._viewEnd=100;
+ const chart={querySelector:()=>({hidden:true,style:{}}),getBoundingClientRect:()=>({left:0,right:100,width:100})};
+ card.shadowRoot.querySelector=selector=>selector==='.chart'?chart:null;
+ card.shadowRoot.querySelectorAll=()=>[];card._showTooltip=time=>shown.push(time);
+ card._bindInteractions();chart.onpointermove({clientX:50,pointerType:'mouse'});
+ assert.equal(pending.size,1);chart.onpointerleave();assert.equal(pending.size,0);
+ queued();assert.deepEqual(shown,[]);
+});
 test('unrelated Home Assistant updates do not rebuild the timeline',()=>{
  const {Card}=load(),card=new Card();card.setConfig({entities:['switch.a']});let renders=0;card._render=()=>renders++;
  card.hass={language:'en',states:{'switch.a':{state:'off',attributes:{friendly_name:'Switch'}}}};assert.equal(renders,1);

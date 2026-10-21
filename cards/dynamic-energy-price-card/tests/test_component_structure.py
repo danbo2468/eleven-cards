@@ -232,7 +232,7 @@ class CardSourceTests(unittest.TestCase):
         self.assertIn('const statusParts = [];', card)
         self.assertIn('countMissingIntervals(', card)
         self.assertIn("if (missingTotal) statusParts.push", card)
-        self.assertIn("if (showTomorrow && !tomorrowPoints.length)", card)
+        self.assertIn("if (!sharedRange && showTomorrow && !tomorrowPoints.length)", card)
         self.assertIn('const dataStatus = statusParts.length', card)
         self.assertNotIn('relativeAgeLabel(', card)
         self.assertNotIn('Bron ${sourceAge}', card)
