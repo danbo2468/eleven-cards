@@ -38,7 +38,7 @@ test('nice axes cover empty, constant, signed and stacked-base ranges at differe
  assert.deepEqual(utils.yAxis([]),{min:0,max:1,step:0.5,ticks:[0,0.5,1]});
  for(const values of [[0],[10],[-10],[-0.004,0.003],[1e-10,2e-10],[1000,8000]]){
   const data=series(...values),axis=utils.yAxis(data),[low,high]=utils.yRange(data);
-  assert.ok(axis.min<=low&&axis.max>=high,JSON.stringify(values));
+  assert.ok(axis.min<=(values.every(v=>v>=0)?Math.max(0,low):low)&&axis.max>=high,JSON.stringify(values));
   const normalized=axis.step/10**Math.floor(Math.log10(axis.step));
   assert.ok([1,2,5].some(n=>Math.abs(normalized-n)<1e-8));
   assert.ok(axis.ticks.length>=2&&axis.ticks.length<=7);

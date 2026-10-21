@@ -3430,6 +3430,10 @@ function yRange(series,config={}) {
 function yAxis(series,config={}){
  if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
  let [min,max]=yRange(series,config);
+ // Padding must not invent negative space for nonnegative readings/bases.
+ let dataMin=Infinity;
+ for(const s of series)for(const p of s.points)for(const value of [p.v,p.base])if(Number.isFinite(value))dataMin=Math.min(dataMin,value);
+ if(!Number.isFinite(config.y_min)&&Number.isFinite(dataMin)&&dataMin>=0&&max>0)min=Math.max(0,min);
  const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
  const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
  const clean=value=>Number(value.toPrecision(15));
@@ -5941,6 +5945,10 @@ function yRange(series,config={}) {
 function yAxis(series,config={}){
  if(config.y_step!=null&&config.y_step!==''&&(!Number.isFinite(config.y_step)||config.y_step<=0))throw new Error('y_step');
  let [min,max]=yRange(series,config);
+ // Padding must not invent negative space for nonnegative readings/bases.
+ let dataMin=Infinity;
+ for(const s of series)for(const p of s.points)for(const value of [p.v,p.base])if(Number.isFinite(value))dataMin=Math.min(dataMin,value);
+ if(!Number.isFinite(config.y_min)&&Number.isFinite(dataMin)&&dataMin>=0&&max>0)min=Math.max(0,min);
  const target=(max-min)/4,power=10**Math.floor(Math.log10(target));
  const step=(config.y_step===''?undefined:config.y_step)??([1,2,5,10].find(n=>n*power>=target)??10)*power;
  const clean=value=>Number(value.toPrecision(15));

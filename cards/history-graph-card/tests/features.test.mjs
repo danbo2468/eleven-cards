@@ -16,7 +16,7 @@ test('stacked optional fill is a band between cumulative heights and its signed 
  c._end=40;c._viewEnd=40;
  const path=c._area(points,t=>t,v=>100-v);
  assert.match(path,/L 20 96/);assert.doesNotMatch(path,/300/);assert.equal((path.match(/Z/g)??[]).length,2);
- assert.ok(c._range[0]<0,'stacked scale includes zero base');
+ assert.equal(c._range[0],0,'nonnegative stacked scale starts at its zero base');
 });
 test('year history is allowed and dense rendering retains extrema and gaps without discarding raw points',()=>{
  assert.equal(u.validateConfig({entities:['sensor.a'],hours_to_show:8760}).hours_to_show,8760);
